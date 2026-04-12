@@ -10,4 +10,4 @@ mod terminal;
 pub use effects::{EffectsHandle, TerminalEvent};
 pub use error::GhosttyError;
 pub use formatter::{Formatter, OutputFormat};
-pub use terminal::Terminal;
+pub use terminal::{CursorPosition, Terminal};

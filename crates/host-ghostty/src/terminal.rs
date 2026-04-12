@@ -153,6 +153,53 @@ impl Terminal {
     pub(crate) fn as_raw(&self) -> sys::GhosttyTerminal {
         self.handle
     }
+
+    /// Current cursor position + visibility.
+    ///
+    /// `(col, row, visible)` — both coordinates are 0-indexed and
+    /// relative to the visible viewport (not the scrollback). If
+    /// the cursor was hidden via DEC mode 25 (e.g. `ESC[?25l`),
+    /// `visible` is false.
+    #[must_use]
+    pub fn cursor_position(&self) -> CursorPosition {
+        let mut col: u16 = 0;
+        let mut row: u16 = 0;
+        let mut visible: bool = true;
+
+        // SAFETY: handle is live; each terminal_get call writes to
+        // an out pointer of the documented output type. We follow
+        // the type mapping from ghostty/vt/terminal.h.
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.handle,
+                sys::GHOSTTY_TERMINAL_DATA_CURSOR_X,
+                (&raw mut col).cast::<std::ffi::c_void>(),
+            );
+            sys::ghostty_terminal_get(
+                self.handle,
+                sys::GHOSTTY_TERMINAL_DATA_CURSOR_Y,
+                (&raw mut row).cast::<std::ffi::c_void>(),
+            );
+            sys::ghostty_terminal_get(
+                self.handle,
+                sys::GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE,
+                (&raw mut visible).cast::<std::ffi::c_void>(),
+            );
+        }
+
+        CursorPosition { col, row, visible }
+    }
+}
+
+/// Position + visibility of a terminal's cursor.
+///
+/// Returned by [`Terminal::cursor_position`]. Coordinates are
+/// 0-indexed and relative to the visible viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorPosition {
+    pub col: u16,
+    pub row: u16,
+    pub visible: bool,
 }
 
 impl Drop for Terminal {
