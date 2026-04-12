@@ -9,9 +9,11 @@
 //! land in Phase 2 (Units 4, 4b, 5) + Phase 3 (Unit 8).
 
 mod app;
+mod pane_widget;
 mod window;
 
 pub use app::{APP_ID, MugenkaiApplication};
+pub use pane_widget::PaneWidget;
 pub use window::MugenkaiWindow;
 
 /// Entry point called from `host-cli::main`.
