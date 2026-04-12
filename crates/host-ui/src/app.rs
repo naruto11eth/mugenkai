@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use adw::prelude::*;
 use gtk4::{gio, glib};
 
@@ -10,11 +13,20 @@ pub const APP_ID: &str = "com.mugenkai.Mugenkai";
 /// Thin wrapper around `adw::Application`.
 ///
 /// Owns the application lifetime and wires the activation callback to
-/// construct a `MugenkaiWindow` on startup. In Phase 1 this is the entire
-/// application; later phases add command-line handlers, custom
-/// activation, etc.
+/// construct a [`MugenkaiWindow`] on startup. Unlike a naive
+/// implementation, this struct also keeps the Rust wrapper structs
+/// alive in `windows` — otherwise the `_pane` field inside each
+/// `MugenkaiWindow` gets dropped the moment `connect_activate`
+/// returns, killing the pane worker thread and breaking any
+/// channel-based communication with the GTK side. The `adw::Window`
+/// would stay on screen (registered with the application) but the
+/// Rust half of the ownership graph would be gone.
 pub struct MugenkaiApplication {
     inner: adw::Application,
+    // RefCell for interior mutability from the non-mut
+    // connect_activate closure; Rc so the closure and the outer
+    // struct can both reach it.
+    windows: Rc<RefCell<Vec<MugenkaiWindow>>>,
 }
 
 impl MugenkaiApplication {
@@ -30,12 +42,16 @@ impl MugenkaiApplication {
         // DBus. We may want to flip this later for cmux-style
         // multi-window semantics.
 
-        inner.connect_activate(|app| {
+        let windows: Rc<RefCell<Vec<MugenkaiWindow>>> = Rc::default();
+
+        let windows_clone = Rc::clone(&windows);
+        inner.connect_activate(move |app| {
             let window = MugenkaiWindow::new(app);
             window.present();
+            windows_clone.borrow_mut().push(window);
         });
 
-        Self { inner }
+        Self { inner, windows }
     }
 
     /// Run the application's main loop until exit. Blocking.
@@ -47,6 +63,12 @@ impl MugenkaiApplication {
     /// Expose the inner `adw::Application` for tests that need it.
     pub fn inner(&self) -> &adw::Application {
         &self.inner
+    }
+
+    /// Number of live window wrappers. Primarily for tests.
+    #[must_use]
+    pub fn window_count(&self) -> usize {
+        self.windows.borrow().len()
     }
 }
 
