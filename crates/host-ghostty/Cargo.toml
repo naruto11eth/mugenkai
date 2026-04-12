@@ -17,3 +17,4 @@ all = { level = "warn", priority = -1 }
 
 [dependencies]
 host-ghostty-sys = { path = "../host-ghostty-sys" }
+thiserror = "2"
