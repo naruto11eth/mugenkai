@@ -7,14 +7,22 @@ use crate::terminal::Terminal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     /// Strip all escape sequences and render only the printable cell
-    /// content. Good for tests and debugging where colors don't matter.
+    /// content. Good for tests and debugging where colors don't
+    /// matter.
     Plain,
+    /// Render cells as HTML with inline-styled `<div>` runs for
+    /// every style change. Carries foreground + background colors,
+    /// bold, italic, and underline. This is what the pane widget
+    /// uses at runtime to render into a `gtk4::Label` via pango
+    /// markup (see `pane_widget::html_to_pango_markup`).
+    Html,
 }
 
 impl OutputFormat {
     fn as_sys(self) -> u32 {
         match self {
             Self::Plain => sys::GHOSTTY_FORMATTER_FORMAT_PLAIN,
+            Self::Html => sys::GHOSTTY_FORMATTER_FORMAT_HTML,
         }
     }
 }
