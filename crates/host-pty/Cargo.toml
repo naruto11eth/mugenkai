@@ -1,0 +1,18 @@
+[package]
+name = "host-pty"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# nix::pty::forkpty + raw fd handling needs unsafe.
+[lints.rust]
+unused_imports = "warn"
+unused_variables = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]

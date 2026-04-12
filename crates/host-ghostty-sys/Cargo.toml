@@ -1,0 +1,21 @@
+[package]
+name = "host-ghostty-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# FFI quarantine: this is the only crate where unsafe is allowed.
+[lints.rust]
+unused_imports = "warn"
+unused_variables = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]
+
+[build-dependencies]
+# bindgen wired up in Phase 1 Unit 2 once vendor/ghostty submodule lands

@@ -1,0 +1,19 @@
+[package]
+name = "host-ghostty"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Trampolines for libghostty-vt effects callbacks need unsafe.
+[lints.rust]
+unused_imports = "warn"
+unused_variables = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]
+host-ghostty-sys = { path = "../host-ghostty-sys" }

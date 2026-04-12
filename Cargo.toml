@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/host-cli",
+    "crates/host-core",
+    "crates/host-ghostty",
+    "crates/host-ghostty-sys",
+    "crates/host-pty",
+    "crates/host-renderer",
+    "crates/host-ui",
+]
+exclude = [
+    "spike/libghostty-linux",
+]
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/morluto/mugenkai"
+authors = ["mugenkai contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_imports = "warn"
+unused_variables = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

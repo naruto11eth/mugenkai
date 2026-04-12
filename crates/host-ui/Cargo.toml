@@ -1,0 +1,18 @@
+[package]
+name = "host-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+host-core = { path = "../host-core" }
+host-ghostty = { path = "../host-ghostty" }
+host-pty = { path = "../host-pty" }
+host-renderer = { path = "../host-renderer" }
+# gtk4 + libadwaita land in Phase 1 Unit 3 once GTK4 dev libs are installed.
