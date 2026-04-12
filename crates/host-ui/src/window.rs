@@ -1,6 +1,8 @@
 use adw::prelude::*;
 use gtk4::{gio, glib};
 
+use crate::pane_widget::{PaneWidget, install_pane_key_controller};
+
 /// The top-level application window.
 ///
 /// Layout:
@@ -9,14 +11,20 @@ use gtk4::{gio, glib};
 /// └── AdwToastOverlay (so future errors can surface as toasts)
 ///     └── AdwToolbarView
 ///         ├── top-bar: AdwHeaderBar
-///         └── content: AdwTabView + AdwTabBar
-///             └── one placeholder page
+///         ├── top-bar: AdwTabBar
+///         └── content: AdwTabView
+///             └── one PaneWidget hosting a libghostty-vt terminal
 /// ```
 ///
-/// For v0.1 the tab content is a single static label. Real `PaneWidget`
-/// rendering + recursive splits land in Phase 2 (Units 4, 4b, 5).
+/// For v0.1 the pane displays the terminal's plain-text screen
+/// state in a label. Real glyph rendering + recursive splits land
+/// in Phase 2 (Units 4b, 5).
 pub struct MugenkaiWindow {
     inner: adw::ApplicationWindow,
+    // Held to keep the pane worker thread alive for the window's
+    // lifetime. Dropping the window drops the pane which tells the
+    // worker to shut down.
+    _pane: PaneWidget,
 }
 
 impl MugenkaiWindow {
@@ -44,23 +52,20 @@ impl MugenkaiWindow {
         // and the content.
         toolbar_view.add_top_bar(&tab_bar);
 
-        // Placeholder content. The visible "message" to the user that
-        // the terminal layer is coming in a later phase. Replaced by
-        // real PaneWidget rendering in Phase 2 Unit 4b.
-        let placeholder = gtk4::Label::builder()
-            .label("mugenkai 0.1.0-dev\n\nPhase 1: GTK4 host shell.\nTerminal rendering lands in Phase 2.")
-            .halign(gtk4::Align::Center)
-            .valign(gtk4::Align::Center)
-            .justify(gtk4::Justification::Center)
-            .wrap(true)
-            .margin_top(24)
-            .margin_bottom(24)
-            .margin_start(24)
-            .margin_end(24)
-            .build();
+        // v0.1 pane: a real libghostty-vt terminal driven by a
+        // forkpty'd shell. Text rendering is still a placeholder
+        // label — Phase 2 Unit 4b replaces it with a proper GLArea
+        // glyph renderer.
+        let pane = PaneWidget::new();
+        let tab_page = tab_view.append(pane.widget());
+        tab_page.set_title("shell");
 
-        let tab_page = tab_view.append(&placeholder);
-        tab_page.set_title("welcome");
+        // Keyboard input: attach the key controller at the window
+        // level so it always fires regardless of which child widget
+        // has focus. GTK4 containers like gtk4::Box don't reliably
+        // receive key events on their own — window-level capture
+        // is the idiom.
+        install_pane_key_controller(&window, pane.input_sender());
 
         toolbar_view.set_content(Some(&tab_view));
 
@@ -71,7 +76,10 @@ impl MugenkaiWindow {
 
         Self::install_shortcuts(&window, app);
 
-        Self { inner: window }
+        Self {
+            inner: window,
+            _pane: pane,
+        }
     }
 
     /// Wire `Ctrl+Q` to close the window via a `win.quit` action.
