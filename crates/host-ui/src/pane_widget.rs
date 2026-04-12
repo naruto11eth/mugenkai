@@ -1,73 +1,81 @@
 //! v0.1 `PaneWidget`: a GTK4 widget hosting a shell PTY + a
 //! libghostty-vt Terminal, with live text readout for the MVP.
 //!
-//! # Design (v0.1 only)
+//! # Thread model
 //!
-//! The real per-pane glyph renderer lands in Phase 2 Unit 4b. For
-//! v0.1 the widget displays the terminal's rendered screen as a
-//! plain `gtk4::Label` inside a `ScrolledWindow` so you can *see*
-//! a real shell's output change on every refresh tick — this is
-//! the minimum that proves the Terminal + PTY + effects pipeline
-//! actually works end-to-end from Rust under GTK.
+//! The `Terminal` + `EffectsHandle` live on the **GTK main thread**.
+//! This is required because the real renderer needs same-thread
+//! access to the terminal's grid to draw cells, and libghostty-vt
+//! terminals are `!Sync`.
+//!
+//! The **pane worker thread** is a pure PTY byte pump:
 //!
 //! ```text
-//! PaneWidget (gtk4::Box)
-//! ├── gtk4::Label "status: running, N bells"
-//! └── gtk4::ScrolledWindow
-//!     └── gtk4::Label (monospace, screen state)
+//! worker thread                  main thread (GTK)
+//! ─────────────                  ──────────────────
+//! Child (forkpty bash)
+//!  │                             PaneState
+//!  │   std mpsc (pty bytes)      ├── Terminal
+//!  │ ───────────────────────────►│── EffectsHandle
+//!  │                             │
+//!  │   tokio mpsc (write bytes)  │   glib::timeout_add_local 30ms:
+//!  │ ◄───────────────────────────│     drain pty bytes → vt_write
+//!  │                             │     drain effects → counters +
+//!  │                             │       WritePty routed back via
+//!  │                             │       write_tx
+//!  │                             │     refresh label
+//!  │   std mpsc (shutdown)       │
+//!  │ ◄───────────────────────────│
 //! ```
 //!
-//! The PTY + Terminal + effects run on a dedicated worker thread
-//! hosting a tokio current-thread runtime. The worker:
-//!
-//! 1. Spawns a shell under `host_pty::Child`
-//! 2. Creates a `host_ghostty::Terminal` + `EffectsHandle`
-//! 3. In a loop, reads PTY bytes → forwards to `Terminal::vt_write`
-//!    → also reads terminal events and forwards them through a
-//!    `std::sync::mpsc::Sender<Snapshot>` back to the GTK main
-//!    thread
-//!
-//! The GTK main thread polls the channel on a 100ms timeout and
-//! updates the labels. No shared mutable state crosses the thread
-//! boundary — only owned message data does.
+//! The worker owns the [`host_pty::Child`] and runs a tokio
+//! current-thread runtime with a two-arm `select!` (read vs write).
+//! Keyboard input flows through the tokio mpsc write channel.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
 use adw::prelude::*;
+use gtk4::gdk;
 use gtk4::glib;
+use tokio::sync::mpsc as tokio_mpsc;
 
 use host_ghostty::{EffectsHandle, Formatter, PlainFormat, Terminal, TerminalEvent};
 use host_pty::{Child, SpawnOptions};
 
-/// A snapshot of terminal state pushed from the worker thread to
-/// the GTK main thread.
-///
-/// Everything in here is owned data so the message is `Send`.
-#[derive(Debug, Clone)]
-struct Snapshot {
-    screen: String,
+/// Cloneable sender that writes raw bytes to a pane's PTY child.
+pub type PaneInputSender = tokio_mpsc::UnboundedSender<Vec<u8>>;
+
+/// Live per-pane state owned on the GTK main thread.
+struct PaneState {
+    terminal: Terminal,
+    effects: EffectsHandle,
+    effects_rx: Receiver<TerminalEvent>,
     bell_count: u64,
     title_changed_count: u64,
     exited: bool,
 }
 
+impl Drop for PaneState {
+    fn drop(&mut self) {
+        if let Err(err) = self.effects.clear(&mut self.terminal) {
+            eprintln!("[mugenkai] warning: failed to clear effects on pane drop: {err}");
+        }
+    }
+}
+
 /// A v0.1 pane that hosts a shell inside a libghostty-vt terminal.
-///
-/// The public `widget()` returns a `gtk4::Widget` that can be added
-/// to any GTK container. The widget owns its worker thread and
-/// terminates it cleanly on drop.
 pub struct PaneWidget {
     widget: gtk4::Box,
-    // Kept alive for the lifetime of the widget. Dropping it stops
-    // the worker thread's main loop and triggers pty teardown.
+    write_tx: PaneInputSender,
+    _state: Rc<RefCell<PaneState>>,
     _controller: PaneController,
 }
 
-/// Handle held by [`PaneWidget`] to keep the worker alive.
 struct PaneController {
-    // Tell the worker to shut down on drop.
     shutdown_tx: Option<Sender<()>>,
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -78,18 +86,12 @@ impl Drop for PaneController {
             let _ = tx.send(());
         }
         if let Some(handle) = self.worker.take() {
-            // Don't block forever; if the worker is wedged we
-            // detach it so the UI close path doesn't hang.
             let _ = handle.join();
         }
     }
 }
 
 impl PaneWidget {
-    /// Build the widget. Spawns the worker thread immediately.
-    ///
-    /// Failing to start the shell is not a hard error: the widget
-    /// still builds and displays the error in its status label.
     #[must_use]
     pub fn new() -> Self {
         let vbox = gtk4::Box::builder()
@@ -112,7 +114,7 @@ impl PaneWidget {
             .label("")
             .halign(gtk4::Align::Start)
             .valign(gtk4::Align::Start)
-            .selectable(true)
+            .selectable(false)
             .wrap(false)
             .xalign(0.0)
             .yalign(0.0)
@@ -128,13 +130,29 @@ impl PaneWidget {
             .build();
         vbox.append(&scroller);
 
-        let (snap_tx, snap_rx) = mpsc::channel::<Snapshot>();
+        let mut terminal = Terminal::new(80, 24, 1000).expect("construct terminal");
+        let mut effects = EffectsHandle::install(&mut terminal).expect("install effects");
+        let effects_rx = effects
+            .take_receiver()
+            .expect("fresh effects handle must yield a receiver");
+
+        let state = Rc::new(RefCell::new(PaneState {
+            terminal,
+            effects,
+            effects_rx,
+            bell_count: 0,
+            title_changed_count: 0,
+            exited: false,
+        }));
+
+        let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+        let (write_tx, write_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
 
         let worker = thread::Builder::new()
             .name("mugenkai-pane-worker".into())
             .spawn(move || {
-                run_worker(snap_tx, shutdown_rx);
+                run_worker(pty_bytes_tx, shutdown_rx, write_rx);
             })
             .expect("spawn mugenkai pane worker thread");
 
@@ -143,23 +161,41 @@ impl PaneWidget {
             worker: Some(worker),
         };
 
-        // Drain snapshots on the GTK main loop every 100ms.
-        let status_clone = status_label.clone();
-        let screen_clone = screen_label.clone();
-        glib::timeout_add_local(Duration::from_millis(100), move || {
-            drain_snapshots(&snap_rx, &status_clone, &screen_clone)
+        refresh_labels(&state.borrow(), &status_label, &screen_label);
+
+        let state_tick = Rc::clone(&state);
+        let status_tick = status_label.clone();
+        let screen_tick = screen_label.clone();
+        let scroller_tick = scroller.clone();
+        let write_tx_tick = write_tx.clone();
+        glib::timeout_add_local(Duration::from_millis(30), move || {
+            drain_pty_bytes(
+                &pty_bytes_rx,
+                &state_tick,
+                &write_tx_tick,
+                &status_tick,
+                &screen_tick,
+                &scroller_tick,
+            )
         });
 
         Self {
             widget: vbox,
+            write_tx,
+            _state: state,
             _controller: controller,
         }
     }
 
-    /// Return the underlying widget for insertion into a container.
     #[must_use]
     pub fn widget(&self) -> &gtk4::Widget {
         self.widget.upcast_ref()
+    }
+
+    /// Return a clone of this pane's PTY input sender.
+    #[must_use]
+    pub fn input_sender(&self) -> PaneInputSender {
+        self.write_tx.clone()
     }
 }
 
@@ -169,88 +205,164 @@ impl Default for PaneWidget {
     }
 }
 
-/// Drain the snapshot channel, updating the labels with the most
-/// recent snapshot. Returns `ControlFlow::Continue` to keep the
-/// timeout tick firing.
-fn drain_snapshots(
-    rx: &Receiver<Snapshot>,
+/// Attach a `gtk4::EventControllerKey` to `widget` that translates
+/// keyboard events to PTY byte sequences and forwards them via
+/// `write_tx`.
+pub fn install_pane_key_controller<W: gtk4::prelude::IsA<gtk4::Widget>>(
+    widget: &W,
+    write_tx: PaneInputSender,
+) {
+    let key_controller = gtk4::EventControllerKey::new();
+    key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    key_controller.connect_key_pressed(move |_controller, keyval, _keycode, modifiers| {
+        if let Some(bytes) = key_to_bytes(keyval, modifiers) {
+            let _ = write_tx.send(bytes);
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    widget.add_controller(key_controller);
+}
+
+fn key_to_bytes(keyval: gdk::Key, modifiers: gdk::ModifierType) -> Option<Vec<u8>> {
+    let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+    let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
+
+    if ctrl
+        && !alt
+        && let Some(ch) = keyval.to_unicode()
+        && ch.is_ascii_alphabetic()
+    {
+        let byte = (ch.to_ascii_lowercase() as u8) - b'a' + 1;
+        return Some(vec![byte]);
+    }
+
+    match keyval {
+        gdk::Key::Return | gdk::Key::KP_Enter => Some(b"\r".to_vec()),
+        gdk::Key::Tab => Some(b"\t".to_vec()),
+        gdk::Key::BackSpace => Some(vec![0x7F]),
+        gdk::Key::Escape => Some(vec![0x1B]),
+        gdk::Key::Up => Some(b"\x1b[A".to_vec()),
+        gdk::Key::Down => Some(b"\x1b[B".to_vec()),
+        gdk::Key::Right => Some(b"\x1b[C".to_vec()),
+        gdk::Key::Left => Some(b"\x1b[D".to_vec()),
+        gdk::Key::Home => Some(b"\x1b[H".to_vec()),
+        gdk::Key::End => Some(b"\x1b[F".to_vec()),
+        gdk::Key::Page_Up => Some(b"\x1b[5~".to_vec()),
+        gdk::Key::Page_Down => Some(b"\x1b[6~".to_vec()),
+        gdk::Key::Delete => Some(b"\x1b[3~".to_vec()),
+        _ => {
+            let ch = keyval.to_unicode()?;
+            let mut buf = [0u8; 4];
+            Some(ch.encode_utf8(&mut buf).as_bytes().to_vec())
+        }
+    }
+}
+
+fn drain_pty_bytes(
+    pty_bytes_rx: &Receiver<Vec<u8>>,
+    state: &Rc<RefCell<PaneState>>,
+    write_tx: &PaneInputSender,
     status_label: &gtk4::Label,
     screen_label: &gtk4::Label,
+    scroller: &gtk4::ScrolledWindow,
 ) -> glib::ControlFlow {
-    let mut latest: Option<Snapshot> = None;
-    while let Ok(snap) = rx.try_recv() {
-        latest = Some(snap);
+    let mut had_input = false;
+    let mut write_pty_responses: Vec<Vec<u8>> = Vec::new();
+
+    {
+        let mut state_mut = state.borrow_mut();
+
+        while let Ok(bytes) = pty_bytes_rx.try_recv() {
+            state_mut.terminal.vt_write(&bytes);
+            had_input = true;
+
+            let mut events: Vec<TerminalEvent> = Vec::new();
+            while let Ok(ev) = state_mut.effects_rx.try_recv() {
+                events.push(ev);
+            }
+            for ev in events {
+                match ev {
+                    TerminalEvent::Bell => state_mut.bell_count += 1,
+                    TerminalEvent::TitleChanged => state_mut.title_changed_count += 1,
+                    TerminalEvent::WritePty(bytes) => write_pty_responses.push(bytes),
+                }
+            }
+        }
+
+        if had_input {
+            refresh_labels(&state_mut, status_label, screen_label);
+        }
     }
-    if let Some(snap) = latest {
-        let status_text = if snap.exited {
-            format!(
-                "shell exited · bells {} · titles {}",
-                snap.bell_count, snap.title_changed_count
-            )
-        } else {
-            format!(
-                "shell running · bells {} · titles {}",
-                snap.bell_count, snap.title_changed_count
-            )
-        };
-        status_label.set_text(&status_text);
-        screen_label.set_text(&snap.screen);
+
+    for bytes in write_pty_responses {
+        let _ = write_tx.send(bytes);
     }
+
+    if had_input {
+        let adj = scroller.vadjustment();
+        adj.set_value(adj.upper() - adj.page_size());
+    }
+
     glib::ControlFlow::Continue
 }
 
-/// Entry point for the worker thread.
-///
-/// Creates a tokio current-thread runtime, spawns a shell, drives
-/// the main pump until shutdown is requested or the child exits.
-fn run_worker(snap_tx: Sender<Snapshot>, shutdown_rx: Receiver<()>) {
+fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &gtk4::Label) {
+    let status_text = if state.exited {
+        format!(
+            "shell exited · bells {} · titles {}",
+            state.bell_count, state.title_changed_count
+        )
+    } else {
+        format!(
+            "shell running · bells {} · titles {}",
+            state.bell_count, state.title_changed_count
+        )
+    };
+    status_label.set_text(&status_text);
+
+    let screen = match Formatter::new(&state.terminal, PlainFormat::Plain, true) {
+        Ok(formatter) => formatter
+            .format()
+            .unwrap_or_else(|err| format!("[format err: {err}]")),
+        Err(err) => format!("[formatter err: {err}]"),
+    };
+    screen_label.set_text(&screen);
+}
+
+fn run_worker(
+    pty_bytes_tx: Sender<Vec<u8>>,
+    shutdown_rx: Receiver<()>,
+    write_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(rt) => rt,
         Err(err) => {
-            let _ = snap_tx.send(Snapshot {
-                screen: format!("failed to start tokio runtime: {err}"),
-                bell_count: 0,
-                title_changed_count: 0,
-                exited: true,
-            });
+            eprintln!("[mugenkai] failed to start tokio runtime: {err}");
             return;
         }
     };
 
     runtime.block_on(async move {
-        if let Err(err) = worker_main(snap_tx.clone(), shutdown_rx).await {
-            let _ = snap_tx.send(Snapshot {
-                screen: format!("pane worker error: {err}"),
-                bell_count: 0,
-                title_changed_count: 0,
-                exited: true,
-            });
+        if let Err(err) = worker_main(&pty_bytes_tx, shutdown_rx, write_rx).await {
+            eprintln!("[mugenkai] pane worker exited with error: {err}");
         }
     });
 }
 
-async fn worker_main(snap_tx: Sender<Snapshot>, shutdown_rx: Receiver<()>) -> Result<(), String> {
+async fn worker_main(
+    pty_bytes_tx: &Sender<Vec<u8>>,
+    shutdown_rx: Receiver<()>,
+    mut write_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+) -> Result<(), String> {
     let child = Child::spawn(SpawnOptions::default()).map_err(|e| format!("spawn shell: {e}"))?;
-    let mut terminal = Terminal::new(80, 24, 1000).map_err(|e| format!("terminal: {e}"))?;
-    let mut effects_handle =
-        EffectsHandle::install(&mut terminal).map_err(|e| format!("effects install: {e}"))?;
-    let events_rx = effects_handle
-        .take_receiver()
-        .expect("fresh effects handle must yield a receiver");
-
-    let mut bell_count: u64 = 0;
-    let mut title_changed_count: u64 = 0;
     let mut buf = vec![0u8; 8192];
-    let mut exited = false;
-
-    // Send an initial snapshot so the UI stops showing "starting shell…".
-    send_snapshot(&snap_tx, &terminal, bell_count, title_changed_count, exited);
 
     loop {
-        // Non-blocking shutdown check every iteration.
         if shutdown_rx.try_recv().is_ok() {
             break;
         }
@@ -260,31 +372,12 @@ async fn worker_main(snap_tx: Sender<Snapshot>, shutdown_rx: Receiver<()>) -> Re
 
             read_result = child.read(&mut buf) => {
                 match read_result {
-                    Ok(0) => {
-                        exited = true;
-                        send_snapshot(&snap_tx, &terminal, bell_count, title_changed_count, exited);
-                        break;
-                    }
+                    Ok(0) => break,
                     Ok(n) => {
-                        terminal.vt_write(&buf[..n]);
-
-                        // Drain any effects the vt_write produced.
-                        while let Ok(ev) = events_rx.try_recv() {
-                            match ev {
-                                TerminalEvent::Bell => bell_count += 1,
-                                TerminalEvent::TitleChanged => title_changed_count += 1,
-                                TerminalEvent::WritePty(bytes) => {
-                                    // Query response — write it back
-                                    // to the PTY. Ignore errors; if
-                                    // the write fails the child is
-                                    // already going down and the next
-                                    // read will return 0.
-                                    let _ = child.write_all(&bytes).await;
-                                }
-                            }
+                        let chunk = buf[..n].to_vec();
+                        if pty_bytes_tx.send(chunk).is_err() {
+                            break;
                         }
-
-                        send_snapshot(&snap_tx, &terminal, bell_count, title_changed_count, exited);
                     }
                     Err(err) => {
                         return Err(format!("pty read: {err}"));
@@ -292,37 +385,16 @@ async fn worker_main(snap_tx: Sender<Snapshot>, shutdown_rx: Receiver<()>) -> Re
                 }
             }
 
-            () = tokio::time::sleep(Duration::from_millis(100)) => {
-                // Periodic wakeup so the shutdown check + snapshot
-                // update fire even when the child is quiet.
-                send_snapshot(&snap_tx, &terminal, bell_count, title_changed_count, exited);
+            key_bytes = write_rx.recv() => {
+                match key_bytes {
+                    Some(bytes) => {
+                        let _ = child.write_all(&bytes).await;
+                    }
+                    None => break,
+                }
             }
         }
     }
 
-    // Clear effects before the terminal is dropped so libghostty-vt
-    // no longer holds a pointer into effects_handle's allocation.
-    let _ = effects_handle.clear(&mut terminal);
     Ok(())
-}
-
-fn send_snapshot(
-    snap_tx: &Sender<Snapshot>,
-    terminal: &Terminal,
-    bell_count: u64,
-    title_changed_count: u64,
-    exited: bool,
-) {
-    let screen = match Formatter::new(terminal, PlainFormat::Plain, true) {
-        Ok(formatter) => formatter
-            .format()
-            .unwrap_or_else(|err| format!("[format err: {err}]")),
-        Err(err) => format!("[formatter err: {err}]"),
-    };
-    let _ = snap_tx.send(Snapshot {
-        screen,
-        bell_count,
-        title_changed_count,
-        exited,
-    });
 }
