@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Mugenkai
+Comment=AI/crypto-native terminal
+Exec=mugenkai
+Icon=com.mugenkai.Mugenkai
+Type=Application
+Categories=System;TerminalEmulator;Development;
+Terminal=false
+StartupWMClass=com.mugenkai.Mugenkai
+StartupNotify=true
+Keywords=terminal;shell;ai;claude;codex;ghostty;

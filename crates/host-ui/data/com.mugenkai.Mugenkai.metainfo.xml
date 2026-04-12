@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.mugenkai.Mugenkai</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Mugenkai</name>
+  <summary>AI/crypto-native terminal</summary>
+
+  <description>
+    <p>
+      Mugenkai is a Linux-first terminal designed around AI coding agents and
+      web3 workflows. It embeds ghostty's terminal core for VT parsing and
+      escape sequence handling, draws cells through a custom Rust glyph
+      renderer on GTK4 + libadwaita, and routes AI orchestration to a
+      sidecar daemon over a Unix-socket JSON-RPC protocol.
+    </p>
+    <p>
+      Mugenkai reads your existing ghostty config file, so your themes,
+      fonts, colors, and keybindings carry over unchanged.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com.mugenkai.Mugenkai.desktop</launchable>
+
+  <url type="homepage">https://github.com/morluto/mugenkai</url>
+  <url type="bugtracker">https://github.com/morluto/mugenkai/issues</url>
+
+  <developer id="com.mugenkai">
+    <name>Mugenkai contributors</name>
+  </developer>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0-dev" date="2026-04-12">
+      <description>
+        <p>Development milestone: Phase 1 GTK4 host shell.</p>
+      </description>
+    </release>
+  </releases>
+</component>
