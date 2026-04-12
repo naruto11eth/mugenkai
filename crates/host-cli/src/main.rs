@@ -1,3 +1,4 @@
-fn main() {
-    println!("mugenkai {}", host_core::VERSION);
+fn main() -> std::process::ExitCode {
+    eprintln!("mugenkai {}", host_core::VERSION);
+    host_ui::run()
 }

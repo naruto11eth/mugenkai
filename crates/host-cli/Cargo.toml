@@ -16,3 +16,4 @@ path = "src/main.rs"
 
 [dependencies]
 host-core = { path = "../host-core" }
+host-ui = { path = "../host-ui" }
