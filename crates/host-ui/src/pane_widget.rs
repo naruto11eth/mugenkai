@@ -43,7 +43,7 @@ use gtk4::gdk;
 use gtk4::glib;
 use tokio::sync::mpsc as tokio_mpsc;
 
-use host_ghostty::{EffectsHandle, Formatter, PlainFormat, Terminal, TerminalEvent};
+use host_ghostty::{EffectsHandle, Formatter, OutputFormat, Terminal, TerminalEvent};
 use host_pty::{Child, SpawnOptions};
 
 /// Cloneable sender that writes raw bytes to a pane's PTY child.
@@ -322,7 +322,7 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     };
     status_label.set_text(&status_text);
 
-    let screen = match Formatter::new(&state.terminal, PlainFormat::Plain, true) {
+    let screen = match Formatter::new(&state.terminal, OutputFormat::Plain, true) {
         Ok(formatter) => formatter
             .format()
             .unwrap_or_else(|err| format!("[format err: {err}]")),

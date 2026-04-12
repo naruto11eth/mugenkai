@@ -9,5 +9,5 @@ mod terminal;
 
 pub use effects::{EffectsHandle, TerminalEvent};
 pub use error::GhosttyError;
-pub use formatter::{Formatter, PlainFormat};
+pub use formatter::{Formatter, OutputFormat};
 pub use terminal::Terminal;

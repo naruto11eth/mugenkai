@@ -6,7 +6,7 @@
 //! wrapper so any future FFI or drop-order regression shows up as
 //! a test failure rather than a runtime crash.
 
-use host_ghostty::{Formatter, GhosttyError, PlainFormat, Terminal};
+use host_ghostty::{Formatter, GhosttyError, OutputFormat, Terminal};
 
 #[test]
 fn construct_and_drop_is_clean() {
@@ -54,7 +54,7 @@ fn formatter_round_trip_matches_spike_output() {
     term.vt_write(b"New content\r\n");
     term.vt_write(b"Line A\r\nLine B\r\nLine C\r\n");
 
-    let formatter = Formatter::new(&term, PlainFormat::Plain, true).expect("formatter");
+    let formatter = Formatter::new(&term, OutputFormat::Plain, true).expect("formatter");
     let text = formatter.format().expect("format");
 
     assert!(
@@ -79,7 +79,7 @@ fn vt_write_empty_slice_is_noop() {
     term.vt_write(&[]);
     // No assertion — the point is "does not crash and does not
     // deadlock with libghostty-vt on a zero-length write".
-    let formatter = Formatter::new(&term, PlainFormat::Plain, true).expect("formatter");
+    let formatter = Formatter::new(&term, OutputFormat::Plain, true).expect("formatter");
     let text = formatter.format().expect("format");
     assert!(text.trim().is_empty(), "expected empty, got {text:?}");
 }
@@ -91,7 +91,7 @@ fn reset_clears_terminal_state() {
 
     term.reset();
 
-    let formatter = Formatter::new(&term, PlainFormat::Plain, true).expect("formatter");
+    let formatter = Formatter::new(&term, OutputFormat::Plain, true).expect("formatter");
     let text = formatter.format().expect("format");
     assert!(
         !text.contains("before reset"),
@@ -107,7 +107,7 @@ fn resize_to_smaller_grid_works() {
 
     // Content from the larger grid should still be accessible via the
     // formatter (reflowed or truncated — both are acceptable).
-    let formatter = Formatter::new(&term, PlainFormat::Plain, true).expect("formatter");
+    let formatter = Formatter::new(&term, OutputFormat::Plain, true).expect("formatter");
     let _ = formatter.format().expect("format");
 }
 
@@ -125,8 +125,8 @@ fn two_terminals_are_independent() {
     a.vt_write(b"only in A\r\n");
     b.vt_write(b"only in B\r\n");
 
-    let fa = Formatter::new(&a, PlainFormat::Plain, true).expect("fa");
-    let fb = Formatter::new(&b, PlainFormat::Plain, true).expect("fb");
+    let fa = Formatter::new(&a, OutputFormat::Plain, true).expect("fa");
+    let fb = Formatter::new(&b, OutputFormat::Plain, true).expect("fb");
     let ta = fa.format().expect("ta");
     let tb = fb.format().expect("tb");
 
@@ -145,13 +145,13 @@ fn formatter_drops_before_terminal() {
     let mut term = Terminal::new(20, 4, 0).expect("terminal");
     term.vt_write(b"live\r\n");
     {
-        let formatter = Formatter::new(&term, PlainFormat::Plain, true).expect("formatter");
+        let formatter = Formatter::new(&term, OutputFormat::Plain, true).expect("formatter");
         let _ = formatter.format().expect("format");
         // formatter drops here
     }
     // terminal is still usable after the formatter dropped.
     term.vt_write(b"after formatter\r\n");
-    let f2 = Formatter::new(&term, PlainFormat::Plain, true).expect("formatter");
+    let f2 = Formatter::new(&term, OutputFormat::Plain, true).expect("formatter");
     let text = f2.format().expect("format");
     assert!(text.contains("after formatter"));
 }

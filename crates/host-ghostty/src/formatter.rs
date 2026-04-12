@@ -3,15 +3,15 @@ use host_ghostty_sys as sys;
 use crate::error::GhosttyError;
 use crate::terminal::Terminal;
 
-/// Output format for the plain-text formatter.
+/// Output format for the terminal formatter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlainFormat {
+pub enum OutputFormat {
     /// Strip all escape sequences and render only the printable cell
-    /// content. Good for tests and debugging.
+    /// content. Good for tests and debugging where colors don't matter.
     Plain,
 }
 
-impl PlainFormat {
+impl OutputFormat {
     fn as_sys(self) -> u32 {
         match self {
             Self::Plain => sys::GHOSTTY_FORMATTER_FORMAT_PLAIN,
@@ -47,7 +47,7 @@ impl<'a> Formatter<'a> {
     /// `GhosttyResult` code on FFI failure.
     pub fn new(
         terminal: &'a Terminal,
-        format: PlainFormat,
+        format: OutputFormat,
         trim: bool,
     ) -> Result<Self, GhosttyError> {
         // SAFETY: mem::zeroed is legal for ghostty_formatter_terminal_options_s
