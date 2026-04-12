@@ -46,7 +46,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use host_ghostty::{EffectsHandle, Formatter, OutputFormat, Terminal, TerminalEvent};
 use host_pty::{Child, SpawnOptions};
 
-use crate::pango_markup::html_to_pango_markup;
+use crate::pango_markup::{html_to_pango_markup, splice_cursor};
 
 /// Cloneable sender that writes raw bytes to a pane's PTY child.
 pub type PaneInputSender = tokio_mpsc::UnboundedSender<Vec<u8>>;
@@ -335,7 +335,15 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     };
     match html {
         Ok(html) => {
-            let markup = html_to_pango_markup(&html);
+            let mut markup = html_to_pango_markup(&html);
+            // Splice a block cursor at the terminal's current
+            // cursor position (if visible). Must run after the
+            // HTML → pango translation because splice_cursor
+            // walks pango tags, not HTML tags.
+            let cursor = state.terminal.cursor_position();
+            if cursor.visible {
+                markup = splice_cursor(&markup, cursor.row as usize, cursor.col as usize);
+            }
             screen_label.set_markup(&markup);
         }
         Err(err) => {
