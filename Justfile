@@ -62,7 +62,16 @@ test-rust:
     LIBCLANG_PATH={{libclang_path}} cargo test --workspace
 
 test-bun:
-    cd daemon && {{bun}} test
+    #!/usr/bin/env bash
+    set -eu
+    cd daemon
+    # bun test errors when there are no *.test.ts files yet. Tolerate that
+    # until daemon tests start landing in Phase 3.
+    if find . -name "*.test.ts" -not -path "./node_modules/*" | grep -q .; then
+        {{bun}} test
+    else
+        echo "[test-bun] no *.test.ts files yet; skipping"
+    fi
 
 # ─── Lint ─────────────────────────────────────────────────────────────
 
