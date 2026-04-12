@@ -231,6 +231,20 @@ fn key_to_bytes(keyval: gdk::Key, modifiers: gdk::ModifierType) -> Option<Vec<u8
     let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
     let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
 
+    // Ctrl+Q is reserved for the window's `win.quit` accelerator.
+    // We return None here so the capture-phase key controller
+    // returns `Propagation::Proceed`, letting GTK's shortcut
+    // dispatch fire the quit action.
+    if ctrl
+        && !alt
+        && let Some(ch) = keyval.to_unicode()
+        && (ch == 'q' || ch == 'Q')
+    {
+        return None;
+    }
+
+    // Control + letter -> control byte (covers everything except
+    // the reserved Ctrl+Q above).
     if ctrl
         && !alt
         && let Some(ch) = keyval.to_unicode()
