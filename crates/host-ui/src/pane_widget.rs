@@ -46,6 +46,8 @@ use tokio::sync::mpsc as tokio_mpsc;
 use host_ghostty::{EffectsHandle, Formatter, OutputFormat, Terminal, TerminalEvent};
 use host_pty::{Child, SpawnOptions};
 
+use crate::pango_markup::html_to_pango_markup;
+
 /// Cloneable sender that writes raw bytes to a pane's PTY child.
 pub type PaneInputSender = tokio_mpsc::UnboundedSender<Vec<u8>>;
 
@@ -322,13 +324,29 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     };
     status_label.set_text(&status_text);
 
-    let screen = match Formatter::new(&state.terminal, OutputFormat::Plain, true) {
-        Ok(formatter) => formatter
-            .format()
-            .unwrap_or_else(|err| format!("[format err: {err}]")),
-        Err(err) => format!("[formatter err: {err}]"),
+    // Ask libghostty-vt to render the screen state as HTML (which
+    // includes per-style runs with fg/bg colors + bold/italic/
+    // underline), then translate to pango markup and push into the
+    // label. set_markup crashes on invalid markup, so fall back to
+    // set_text with plain format on parse errors.
+    let html = match Formatter::new(&state.terminal, OutputFormat::Html, true) {
+        Ok(formatter) => formatter.format(),
+        Err(err) => Err(err),
     };
-    screen_label.set_text(&screen);
+    match html {
+        Ok(html) => {
+            let markup = html_to_pango_markup(&html);
+            screen_label.set_markup(&markup);
+        }
+        Err(err) => {
+            // HTML format failed (rare) — drop to plain text so
+            // the user still sees what's happening.
+            let plain = Formatter::new(&state.terminal, OutputFormat::Plain, true)
+                .and_then(|f| f.format())
+                .unwrap_or_else(|inner| format!("[format err: {err}; {inner}]"));
+            screen_label.set_text(&plain);
+        }
+    }
 }
 
 fn run_worker(
