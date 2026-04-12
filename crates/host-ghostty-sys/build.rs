@@ -105,10 +105,13 @@ fn main() {
     println!("cargo:libdir={}", lib_dir.display());
     println!("cargo:include={}", include_dir.display());
 
-    // Embed an rpath so binaries find libghostty-vt.so without
-    // LD_LIBRARY_PATH at dev time. AppImage builds (Phase 5) re-rpath
-    // separately.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+    // NOTE: we intentionally do NOT emit
+    // `cargo:rustc-link-arg=-Wl,-rpath,...` here. That directive only
+    // applies to the current package's link step, not to downstream
+    // binary crates (mugenkai lives in host-cli, three layers up).
+    // Until a proper per-binary build.rs rpath flow is in place,
+    // dev-time runs set LD_LIBRARY_PATH via the Justfile. AppImage
+    // builds (Phase 5 Unit 14) handle rpath through linuxdeploy.
 
     let bindings = bindgen::Builder::default()
         .header("wrapper.h")

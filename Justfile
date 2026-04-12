@@ -13,6 +13,10 @@ bun := env_var_or_default("BUN", "/home/naruto/.bun/bin/bun")
 # (bun, zig, cargo all install to ~/.bun, ~/.local/bin, ~/.cargo respectively)
 export PATH := "/home/naruto/.bun/bin:/home/naruto/.local/bin:/home/naruto/.cargo/bin:" + env_var("PATH")
 
+# libghostty-vt.so lives in host-ghostty-sys's OUT_DIR. `just` helper
+# that computes the latest build dir for LD_LIBRARY_PATH.
+libghostty_dir := `ls -td target/debug/build/host-ghostty-sys-*/out/ghostty-install/lib 2>/dev/null | head -1 || echo ""`
+
 # Default: list recipes
 default:
     @just --list
@@ -47,7 +51,8 @@ vendor-build:
 
 # Run the host binary
 run:
-    LIBCLANG_PATH={{libclang_path}} cargo run -p host-cli
+    LIBCLANG_PATH={{libclang_path}} cargo build -p host-cli
+    LD_LIBRARY_PATH="{{libghostty_dir}}:${LD_LIBRARY_PATH:-}" ./target/debug/mugenkai
 
 # Run the daemon binary
 run-daemon:
