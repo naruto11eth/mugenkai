@@ -3,5 +3,7 @@
 // in Phase 2 Unit 4 once vendor/ghostty + bindgen are wired in Phase 1 Unit 2.
 
 mod error;
+mod terminal;
 
 pub use error::GhosttyError;
+pub use terminal::Terminal;
