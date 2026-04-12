@@ -1,0 +1,35 @@
+# planning + research workspace, kept local
+/docs
+
+# reference repos cloned for study, not part of mugenkai
+/temp
+
+# vendored ghostty submodule build outputs
+/vendor/ghostty/zig-out
+/vendor/ghostty/.zig-cache
+
+# rust
+target/
+**/*.rs.bk
+
+# bun / node
+node_modules/
+.bun/
+bun.lockb
+
+# build outputs
+/dist
+/build
+
+# local env / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
