@@ -6,8 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+links = "ghostty-vt"
+build = "build.rs"
 
 # FFI quarantine: this is the only crate where unsafe is allowed.
+# Workspace lints set unsafe_code = "deny"; we explicitly do NOT inherit
+# them so that bindgen-generated unsafe types compile.
 [lints.rust]
 unused_imports = "warn"
 unused_variables = "warn"
@@ -18,4 +22,4 @@ all = { level = "warn", priority = -1 }
 [dependencies]
 
 [build-dependencies]
-# bindgen wired up in Phase 1 Unit 2 once vendor/ghostty submodule lands
+bindgen = "0.71"
