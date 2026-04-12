@@ -30,6 +30,137 @@ const OUTER_OPEN: &str = "<div style=\"font-family: monospace; white-space: pre;
 const OUTER_CLOSE: &str = "</div>";
 const INNER_PREFIX: &str = "<div style=\"display: inline;";
 
+/// Pango markup fragments used to draw a block cursor. Foreground
+/// black on a light grey background — visible on both dark and
+/// light terminal themes without looking like a "selected cell".
+const CURSOR_OPEN: &str = "<span background=\"#d3d7cf\" foreground=\"#000000\">";
+const CURSOR_CLOSE: &str = "</span>";
+
+/// Splice a block cursor into an already-translated pango markup
+/// string at the given `(row, col)` position.
+///
+/// Rows are separated by `\n` and columns count rendered characters
+/// only — tags (`<...>`) and HTML entities (`&lt;` `&gt;` `&amp;`)
+/// are skipped or counted as a single character respectively.
+///
+/// If the cursor position is past the visible content (common when
+/// a shell is waiting for input on an otherwise-empty row), the
+/// splicer pads with spaces up to the column and appends the cursor
+/// block at the end.
+///
+/// Returns the input unchanged when `(row, col)` is `(u32::MAX, _)`
+/// or out of sane bounds — this exists so callers can pass a
+/// sentinel for "cursor hidden".
+pub fn splice_cursor(markup: &str, target_row: usize, target_col: usize) -> String {
+    let mut out = String::with_capacity(markup.len() + 64);
+    let mut row: usize = 0;
+    let mut col: usize = 0;
+    let mut in_tag = false;
+    let mut spliced = false;
+    let mut iter = markup.chars().peekable();
+
+    while let Some(ch) = iter.next() {
+        if in_tag {
+            out.push(ch);
+            if ch == '>' {
+                in_tag = false;
+            }
+            continue;
+        }
+
+        if ch == '<' {
+            // We hit a tag while potentially at the target position.
+            // If (row, col) matches, emit the cursor as a trailing
+            // space BEFORE the tag so the following text renders
+            // with its intended style.
+            if !spliced && row == target_row && col == target_col {
+                out.push_str(CURSOR_OPEN);
+                out.push(' ');
+                out.push_str(CURSOR_CLOSE);
+                spliced = true;
+            }
+            in_tag = true;
+            out.push(ch);
+            continue;
+        }
+
+        if ch == '\n' {
+            // If the cursor belongs somewhere on this row at or
+            // past the current column, splice a padded cursor
+            // block before we move to the next row. Padding is
+            // emitted OUTSIDE the cursor span so only the final
+            // single space carries the cursor style.
+            if !spliced && row == target_row && col <= target_col {
+                for _ in col..target_col {
+                    out.push(' ');
+                }
+                out.push_str(CURSOR_OPEN);
+                out.push(' ');
+                out.push_str(CURSOR_CLOSE);
+                spliced = true;
+            }
+            out.push(ch);
+            row += 1;
+            col = 0;
+            continue;
+        }
+
+        if ch == '&' {
+            // HTML entity — collect up to the semicolon and treat
+            // the whole thing as one rendered character.
+            let mut entity = String::from("&");
+            while let Some(&next) = iter.peek() {
+                entity.push(next);
+                iter.next();
+                if next == ';' {
+                    break;
+                }
+            }
+            if !spliced && row == target_row && col == target_col {
+                out.push_str(CURSOR_OPEN);
+                out.push_str(&entity);
+                out.push_str(CURSOR_CLOSE);
+                spliced = true;
+            } else {
+                out.push_str(&entity);
+            }
+            col += 1;
+            continue;
+        }
+
+        // Normal rendered character.
+        if !spliced && row == target_row && col == target_col {
+            out.push_str(CURSOR_OPEN);
+            out.push(ch);
+            out.push_str(CURSOR_CLOSE);
+            spliced = true;
+        } else {
+            out.push(ch);
+        }
+        col += 1;
+    }
+
+    // Cursor is past all content — pad newlines to target_row,
+    // reset column tracking to 0 if we bumped rows, then pad
+    // spaces to target_col and append the cursor block.
+    if !spliced {
+        if row < target_row {
+            for _ in row..target_row {
+                out.push('\n');
+            }
+            col = 0;
+        }
+        for _ in col..target_col {
+            out.push(' ');
+        }
+        out.push_str(CURSOR_OPEN);
+        out.push(' ');
+        out.push_str(CURSOR_CLOSE);
+    }
+
+    out
+}
+
 /// Transform ghostty's HTML formatter output into a pango-markup
 /// string suitable for [`gtk4::Label::set_markup`].
 ///
@@ -287,5 +418,77 @@ mod tests {
     fn malformed_input_falls_back_to_passthrough() {
         let html = "not ghostty output at all";
         assert_eq!(html_to_pango_markup(html), "not ghostty output at all");
+    }
+
+    #[test]
+    fn splice_cursor_at_start_of_plain_text() {
+        let out = splice_cursor("hello", 0, 0);
+        assert_eq!(
+            out,
+            "<span background=\"#d3d7cf\" foreground=\"#000000\">h</span>ello"
+        );
+    }
+
+    #[test]
+    fn splice_cursor_mid_row() {
+        let out = splice_cursor("hello", 0, 2);
+        assert_eq!(
+            out,
+            "he<span background=\"#d3d7cf\" foreground=\"#000000\">l</span>lo"
+        );
+    }
+
+    #[test]
+    fn splice_cursor_on_second_row() {
+        let out = splice_cursor("line0\nline1", 1, 3);
+        assert_eq!(
+            out,
+            "line0\nlin<span background=\"#d3d7cf\" foreground=\"#000000\">e</span>1"
+        );
+    }
+
+    #[test]
+    fn splice_cursor_past_end_of_row_pads_spaces_outside_span() {
+        // Row 0 has only 3 chars but cursor is at col 6 → emit 3
+        // unformatted padding spaces then the cursor block as a
+        // single-space span.
+        let out = splice_cursor("abc\nxyz", 0, 6);
+        assert_eq!(
+            out,
+            "abc   <span background=\"#d3d7cf\" foreground=\"#000000\"> </span>\nxyz"
+        );
+    }
+
+    #[test]
+    fn splice_cursor_past_all_content_appends() {
+        let out = splice_cursor("one\ntwo", 4, 2);
+        assert_eq!(
+            out,
+            "one\ntwo\n\n\n  <span background=\"#d3d7cf\" foreground=\"#000000\"> </span>"
+        );
+    }
+
+    #[test]
+    fn splice_cursor_inside_existing_span_uses_nesting() {
+        let markup = "<span foreground=\"#ff0000\">red</span>";
+        let out = splice_cursor(markup, 0, 1);
+        // The cursor span nests inside the existing span, which
+        // pango renders as "r" with red foreground then "e" with
+        // cursor style (inner span wins for the attributes it
+        // specifies), then "d" red again.
+        assert_eq!(
+            out,
+            "<span foreground=\"#ff0000\">r<span background=\"#d3d7cf\" foreground=\"#000000\">e</span>d</span>"
+        );
+    }
+
+    #[test]
+    fn splice_cursor_on_entity_counts_as_single_char() {
+        let markup = "a&lt;b";
+        let out = splice_cursor(markup, 0, 1);
+        assert_eq!(
+            out,
+            "a<span background=\"#d3d7cf\" foreground=\"#000000\">&lt;</span>b"
+        );
     }
 }
