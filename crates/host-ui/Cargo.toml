@@ -15,4 +15,7 @@ host-core = { path = "../host-core" }
 host-ghostty = { path = "../host-ghostty" }
 host-pty = { path = "../host-pty" }
 host-renderer = { path = "../host-renderer" }
-# gtk4 + libadwaita land in Phase 1 Unit 3 once GTK4 dev libs are installed.
+gtk4 = { version = "0.9", features = ["v4_14"] }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
+
+[dev-dependencies]
