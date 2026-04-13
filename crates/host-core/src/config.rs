@@ -146,7 +146,7 @@ impl Default for PaneConfig {
     fn default() -> Self {
         Self {
             focus_ring: true,
-            focus_ring_color: "#4c71f2".into(),
+            focus_ring_color: "#1e40af".into(),
             split_ratio: 0.5,
         }
     }
