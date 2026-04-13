@@ -41,10 +41,11 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk4::gdk;
 use gtk4::glib;
+use gtk4::pango;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use host_ghostty::{EffectsHandle, Formatter, OutputFormat, Terminal, TerminalEvent};
-use host_pty::{Child, SpawnOptions};
+use host_pty::{Child, SpawnOptions, Winsize};
 
 use host_core::{CursorConfig as CoreCursorConfig, CursorStyle};
 
@@ -88,6 +89,24 @@ struct PaneState {
     /// tick redraws the label to show/hide the cursor
     /// immediately instead of waiting for PTY activity.
     needs_refresh: bool,
+    /// Pixel dimensions of one monospace cell, measured once from
+    /// the screen label's pango context. Used by the mouse encoder
+    /// + libghostty-vt resize, both of which want integer pixels.
+    cell_width_px: u32,
+    cell_height_px: u32,
+    /// Per-cell width in pango units (1/1024 of a pixel). Used by
+    /// the resize watcher to compute `cols` with sub-pixel
+    /// precision: `cols = (viewport_w * SCALE) / cell_width_units`.
+    /// Floor division then guarantees that
+    /// `cols * cell_width_units <= viewport_w * SCALE`, so the
+    /// rendered grid never exceeds the viewport horizontally.
+    cell_width_units: i32,
+    /// Last cell grid dimensions applied to the terminal + PTY.
+    /// The resize watcher polls the widget every 30ms but only
+    /// pushes a resize when these change, avoiding `TIOCSWINSZ`
+    /// storms while the user drags the window.
+    last_cols: u16,
+    last_rows: u16,
 }
 
 impl Drop for PaneState {
@@ -151,6 +170,7 @@ impl PaneWidget {
     /// Build a pane with cursor appearance driven by the user's
     /// configuration.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn with_cursor_config(cursor_cfg: &CoreCursorConfig) -> Self {
         let vbox = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
@@ -188,7 +208,18 @@ impl PaneWidget {
             .build();
         vbox.append(&scroller);
 
-        let mut terminal = Terminal::new(80, 24, 1000).expect("construct terminal");
+        // Measure one monospace cell's pixel size now, before the
+        // worker thread starts. The label's pango context inherits
+        // the system monospace font from our CSS class, so the
+        // metrics match what the user will actually see rendered.
+        let (cell_width_px, cell_height_px, cell_width_units) =
+            measure_monospace_cell(&screen_label);
+
+        let initial_cols: u16 = 80;
+        let initial_rows: u16 = 24;
+
+        let mut terminal =
+            Terminal::new(initial_cols, initial_rows, 1000).expect("construct terminal");
         let mut effects = EffectsHandle::install(&mut terminal).expect("install effects");
         let effects_rx = effects
             .take_receiver()
@@ -221,16 +252,22 @@ impl PaneWidget {
             // via set_focused(true).
             focused: false,
             needs_refresh: false,
+            cell_width_px,
+            cell_height_px,
+            cell_width_units,
+            last_cols: initial_cols,
+            last_rows: initial_rows,
         }));
 
         let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
         let (write_tx, write_rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
+        let (resize_tx, resize_rx) = tokio_mpsc::unbounded_channel::<Winsize>();
 
         let worker = thread::Builder::new()
             .name("mugenkai-pane-worker".into())
             .spawn(move || {
-                run_worker(pty_bytes_tx, shutdown_rx, write_rx);
+                run_worker(pty_bytes_tx, shutdown_rx, write_rx, resize_rx);
             })
             .expect("spawn mugenkai pane worker thread");
 
@@ -246,11 +283,13 @@ impl PaneWidget {
         let screen_tick = screen_label.clone();
         let scroller_tick = scroller.clone();
         let write_tx_tick = write_tx.clone();
+        let resize_tx_tick = resize_tx.clone();
         let timer_source = glib::timeout_add_local(Duration::from_millis(30), move || {
             drain_pty_bytes(
                 &pty_bytes_rx,
                 &state_tick,
                 &write_tx_tick,
+                &resize_tx_tick,
                 &status_tick,
                 &screen_tick,
                 &scroller_tick,
@@ -434,6 +473,7 @@ fn drain_pty_bytes(
     pty_bytes_rx: &Receiver<Vec<u8>>,
     state: &Rc<RefCell<PaneState>>,
     write_tx: &PaneInputSender,
+    resize_tx: &tokio_mpsc::UnboundedSender<Winsize>,
     status_label: &gtk4::Label,
     screen_label: &gtk4::Label,
     scroller: &gtk4::ScrolledWindow,
@@ -497,6 +537,8 @@ fn drain_pty_bytes(
             blink_flipped = true;
         }
 
+        let resize_dirty = maybe_apply_resize(&mut state_mut, scroller, resize_tx);
+
         // set_focused schedules a refresh so the cursor can
         // appear/disappear on focus change without waiting for
         // PTY activity or a blink tick.
@@ -505,7 +547,7 @@ fn drain_pty_bytes(
             state_mut.needs_refresh = false;
         }
 
-        if had_input || blink_flipped || focus_dirty {
+        if had_input || blink_flipped || focus_dirty || resize_dirty {
             refresh_labels(&state_mut, status_label, screen_label);
         }
     }
@@ -579,10 +621,100 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     }
 }
 
+/// Poll the scroller's allocated pixel size and, if it differs
+/// from the grid we last pushed, resize the libghostty-vt terminal
+/// and send a `Winsize` to the pty worker so programs inside
+/// (vim, less, htop) receive `SIGWINCH` and redraw.
+///
+/// Returns `true` if a resize was applied — the caller uses that
+/// as a "label dirty" signal so the next `refresh_labels` call
+/// renders into the new grid.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn maybe_apply_resize(
+    state_mut: &mut PaneState,
+    scroller: &gtk4::ScrolledWindow,
+    resize_tx: &tokio_mpsc::UnboundedSender<Winsize>,
+) -> bool {
+    let width_px = scroller.width();
+    let height_px = scroller.height();
+    if width_px <= 0 || height_px <= 0 {
+        return false;
+    }
+
+    let cw = state_mut.cell_width_px.max(1);
+    let ch = state_mut.cell_height_px.max(1);
+
+    // Compute cols using the exact per-cell pango unit width and
+    // floor division. This guarantees `cols * cell_width_units` is
+    // ≤ `viewport_w * SCALE`, so the rendered grid never exceeds
+    // the viewport horizontally — the auto h-scrollbar stays
+    // hidden in steady state and the window doesn't grow to fit
+    // an oversized child.
+    let cell_units = state_mut.cell_width_units.max(1);
+    let viewport_units = width_px.saturating_mul(pango::SCALE);
+    let cols_signed = (viewport_units / cell_units).max(1);
+    let cols_u32 = u32::try_from(cols_signed).unwrap_or(1).clamp(1, 500);
+
+    let rows_u32 = ((height_px as u32) / ch).clamp(1, 300);
+    let cols = cols_u32 as u16;
+    let rows = rows_u32 as u16;
+
+    if cols == state_mut.last_cols && rows == state_mut.last_rows {
+        return false;
+    }
+
+    match state_mut.terminal.resize(cols, rows, cw, ch) {
+        Ok(()) => {
+            state_mut.last_cols = cols;
+            state_mut.last_rows = rows;
+            let px_w = u16::try_from(cols_u32.saturating_mul(cw)).unwrap_or(u16::MAX);
+            let px_h = u16::try_from(rows_u32.saturating_mul(ch)).unwrap_or(u16::MAX);
+            let _ = resize_tx.send(Winsize::new(cols, rows, px_w, px_h));
+            true
+        }
+        Err(err) => {
+            eprintln!("[mugenkai] terminal resize to {cols}x{rows} failed: {err}");
+            false
+        }
+    }
+}
+
+/// Measure one monospace cell three ways:
+///
+/// - integer pixels (for the mouse encoder + libghostty-vt resize,
+///   both of which want u32 pixels)
+/// - pango units (1/1024 of a pixel) for the per-cell width, used
+///   by the resize watcher to compute `cols` with sub-pixel
+///   precision so the grid never overflows the viewport
+fn measure_monospace_cell(label: &gtk4::Label) -> (u32, u32, i32) {
+    const PROBE_LEN: i32 = 200;
+
+    let ctx = label.pango_context();
+    let font_desc = ctx
+        .font_description()
+        .unwrap_or_else(|| pango::FontDescription::from_string("monospace 11"));
+
+    let layout = pango::Layout::new(&ctx);
+    layout.set_font_description(Some(&font_desc));
+    layout.set_text(&"M".repeat(PROBE_LEN as usize));
+    let (probe_width_px, line_height_px) = layout.pixel_size();
+    let (probe_width_units, _) = layout.size();
+
+    let cell_width_units = (probe_width_units / PROBE_LEN).max(1);
+    let width_px = ((probe_width_px + PROBE_LEN / 2) / PROBE_LEN).max(1);
+    let height_px = line_height_px.max(1);
+
+    #[allow(clippy::cast_sign_loss)]
+    {
+        (width_px as u32, height_px as u32, cell_width_units)
+    }
+}
+
 fn run_worker(
     pty_bytes_tx: Sender<Vec<u8>>,
     shutdown_rx: Receiver<()>,
     write_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+    resize_rx: tokio_mpsc::UnboundedReceiver<Winsize>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -596,7 +728,7 @@ fn run_worker(
     };
 
     runtime.block_on(async move {
-        if let Err(err) = worker_main(&pty_bytes_tx, shutdown_rx, write_rx).await {
+        if let Err(err) = worker_main(&pty_bytes_tx, shutdown_rx, write_rx, resize_rx).await {
             eprintln!("[mugenkai] pane worker exited with error: {err}");
         }
     });
@@ -606,6 +738,7 @@ async fn worker_main(
     pty_bytes_tx: &Sender<Vec<u8>>,
     shutdown_rx: Receiver<()>,
     mut write_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+    mut resize_rx: tokio_mpsc::UnboundedReceiver<Winsize>,
 ) -> Result<(), String> {
     let child = Child::spawn(SpawnOptions::default()).map_err(|e| format!("spawn shell: {e}"))?;
     let mut buf = vec![0u8; 8192];
@@ -637,6 +770,17 @@ async fn worker_main(
                 match key_bytes {
                     Some(bytes) => {
                         let _ = child.write_all(&bytes).await;
+                    }
+                    None => break,
+                }
+            }
+
+            resize_req = resize_rx.recv() => {
+                match resize_req {
+                    Some(ws) => {
+                        if let Err(err) = child.resize(ws) {
+                            eprintln!("[mugenkai] pty resize failed: {err}");
+                        }
                     }
                     None => break,
                 }
