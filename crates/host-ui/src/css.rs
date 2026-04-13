@@ -36,17 +36,25 @@ pub fn install_for_default_display(focus_color: &str) {
         return;
     };
 
+    // 4px ring + 12px inner padding + 6px outer margin. The
+    // unfocused variant uses a transparent border of the SAME
+    // thickness plus the same padding/margin so widget bounds
+    // never shift when the class toggles. Padding is the gap
+    // between the shell text and the border; margin is the gap
+    // between adjacent split panes.
     let css = format!(
         "
         .mugenkai-pane-focused {{
-            border: 2px solid {focus_color};
-            border-radius: 4px;
-            padding: 0;
+            border: 4px solid {focus_color};
+            border-radius: 8px;
+            padding: 12px;
+            margin: 6px;
         }}
         .mugenkai-pane-unfocused {{
-            border: 2px solid transparent;
-            border-radius: 4px;
-            padding: 0;
+            border: 4px solid transparent;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 6px;
         }}
         "
     );
