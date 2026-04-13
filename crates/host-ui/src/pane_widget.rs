@@ -54,6 +54,7 @@ use crate::pango_markup::{CursorShape, CursorSpan, html_to_pango_markup, splice_
 pub type PaneInputSender = tokio_mpsc::UnboundedSender<Vec<u8>>;
 
 /// Live per-pane state owned on the GTK main thread.
+#[allow(clippy::struct_excessive_bools)]
 struct PaneState {
     terminal: Terminal,
     effects: EffectsHandle,
@@ -76,6 +77,17 @@ struct PaneState {
     cursor_blink_interval: Duration,
     /// Whether blinking is enabled at all.
     cursor_blink_enabled: bool,
+    /// Whether this pane is the tree-focused one. Only focused
+    /// panes render a cursor — unfocused panes stay cursor-less
+    /// so split layouts don't show phantom cursors everywhere.
+    /// Updated via [`PaneWidget::set_focused`] from the
+    /// [`crate::split_container::SplitContainer`] on every
+    /// focus change and rematerialization.
+    focused: bool,
+    /// Set when `set_focused` changes focus state; the next 30ms
+    /// tick redraws the label to show/hide the cursor
+    /// immediately instead of waiting for PTY activity.
+    needs_refresh: bool,
 }
 
 impl Drop for PaneState {
@@ -90,7 +102,9 @@ impl Drop for PaneState {
 pub struct PaneWidget {
     widget: gtk4::Box,
     write_tx: PaneInputSender,
-    _state: Rc<RefCell<PaneState>>,
+    // Shared with the 30ms drain_pty_bytes tick closure. Used
+    // directly by set_focused to flip tree-focus state.
+    state: Rc<RefCell<PaneState>>,
     _controller: PaneController,
     // The glib timeout source that runs drain_pty_bytes every
     // 30ms. Wrapped in Option so Drop can take() and remove() it
@@ -202,6 +216,11 @@ impl PaneWidget {
             cursor_span,
             cursor_blink_interval,
             cursor_blink_enabled: cursor_cfg.blink,
+            // New panes start unfocused; SplitContainer flips the
+            // active pane to focused immediately after construction
+            // via set_focused(true).
+            focused: false,
+            needs_refresh: false,
         }));
 
         let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
@@ -241,7 +260,7 @@ impl PaneWidget {
         Self {
             widget: vbox,
             write_tx,
-            _state: state,
+            state,
             _controller: controller,
             timer_source: Some(timer_source),
         }
@@ -256,6 +275,30 @@ impl PaneWidget {
     #[must_use]
     pub fn input_sender(&self) -> PaneInputSender {
         self.write_tx.clone()
+    }
+
+    /// Mark this pane as focused or unfocused from the tree's
+    /// perspective. Only focused panes render a cursor; others
+    /// stay cursor-less.
+    ///
+    /// Called by [`crate::split_container::SplitContainer`] on
+    /// focus changes and rematerialization. Schedules an
+    /// immediate label redraw on the next 30ms tick so the
+    /// cursor appears/disappears promptly — up to one tick of
+    /// lag, which is imperceptible.
+    pub fn set_focused(&self, focused: bool) {
+        let mut state = self.state.borrow_mut();
+        if state.focused == focused {
+            return;
+        }
+        state.focused = focused;
+        state.needs_refresh = true;
+        // Reset the blink so the cursor appears solid the moment
+        // focus arrives, matching xterm/gnome-terminal behavior.
+        if focused {
+            state.cursor_blink_on = true;
+            state.cursor_blink_last_toggle = std::time::Instant::now();
+        }
     }
 }
 
@@ -418,14 +461,25 @@ fn drain_pty_bytes(
             state_mut.cursor_blink_on = true;
             state_mut.cursor_blink_last_toggle = std::time::Instant::now();
         } else if state_mut.cursor_blink_enabled
+            && state_mut.focused
             && state_mut.cursor_blink_last_toggle.elapsed() >= state_mut.cursor_blink_interval
         {
+            // Only blink on the focused pane — unfocused panes
+            // have no cursor to flip.
             state_mut.cursor_blink_on = !state_mut.cursor_blink_on;
             state_mut.cursor_blink_last_toggle = std::time::Instant::now();
             blink_flipped = true;
         }
 
-        if had_input || blink_flipped {
+        // set_focused schedules a refresh so the cursor can
+        // appear/disappear on focus change without waiting for
+        // PTY activity or a blink tick.
+        let focus_dirty = state_mut.needs_refresh;
+        if focus_dirty {
+            state_mut.needs_refresh = false;
+        }
+
+        if had_input || blink_flipped || focus_dirty {
             refresh_labels(&state_mut, status_label, screen_label);
         }
     }
@@ -471,11 +525,14 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
             // Splice the configured cursor at the terminal's
             // current position. Must run after the HTML → pango
             // translation because splice_cursor walks pango tags,
-            // not HTML tags. Only splice when (a) the terminal's
-            // cursor is visible per DEC mode 25 AND (b) the blink
-            // phase is currently "on".
+            // not HTML tags. Only splice when ALL of:
+            //   - this pane is the tree-focused one
+            //   - the terminal's cursor is visible (DEC mode 25)
+            //   - the blink phase is currently "on"
+            // Unfocused panes stay cursor-less so split layouts
+            // don't show phantom cursors on every pane.
             let cursor = state.terminal.cursor_position();
-            if cursor.visible && state.cursor_blink_on {
+            if state.focused && cursor.visible && state.cursor_blink_on {
                 markup = splice_cursor(
                     &markup,
                     cursor.row as usize,
