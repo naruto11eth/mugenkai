@@ -189,6 +189,30 @@ impl Terminal {
 
         CursorPosition { col, row, visible }
     }
+
+    /// Whether the application running inside the terminal has
+    /// activated any mouse-tracking DEC mode (X10, normal, button,
+    /// or any-event).
+    ///
+    /// `host-ui` checks this before forwarding GTK scroll/click
+    /// events to the PTY: when no app has asked for mouse input
+    /// the events fall through to the surrounding `ScrolledWindow`
+    /// so the user gets normal terminal scrollback behavior.
+    #[must_use]
+    pub fn mouse_tracking_active(&self) -> bool {
+        let mut active: bool = false;
+        // SAFETY: handle is live; the docs for
+        // GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING specify the output
+        // type as `bool *`, which matches the pointer below.
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.handle,
+                sys::GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,
+                (&raw mut active).cast::<std::ffi::c_void>(),
+            );
+        }
+        active
+    }
 }
 
 /// Position + visibility of a terminal's cursor.
