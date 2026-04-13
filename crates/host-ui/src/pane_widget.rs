@@ -44,7 +44,9 @@ use gtk4::glib;
 use gtk4::pango;
 use tokio::sync::mpsc as tokio_mpsc;
 
-use host_ghostty::{EffectsHandle, Formatter, OutputFormat, Terminal, TerminalEvent};
+use host_ghostty::{
+    EffectsHandle, Formatter, MouseEncoder, OutputFormat, Terminal, TerminalEvent,
+};
 use host_pty::{Child, SpawnOptions, Winsize};
 
 use host_core::{CursorConfig as CoreCursorConfig, CursorStyle};
@@ -107,6 +109,11 @@ struct PaneState {
     /// storms while the user drags the window.
     last_cols: u16,
     last_rows: u16,
+    /// Per-pane mouse encoder. Translates GTK scroll/click events
+    /// into the protocol bytes the application running in the
+    /// terminal expects (X10 / SGR / UTF8 / URXVT). One encoder per
+    /// pane so reuse keeps the per-event allocation cost flat.
+    mouse_encoder: MouseEncoder,
 }
 
 impl Drop for PaneState {
@@ -235,6 +242,18 @@ impl PaneWidget {
         let cursor_span = CursorSpan::new(cursor_shape, &cursor_cfg.color, &cursor_cfg.text_color);
         let cursor_blink_interval = Duration::from_millis(cursor_cfg.blink_interval_ms);
 
+        let mut mouse_encoder = MouseEncoder::new().expect("construct mouse encoder");
+        // Seed the encoder with the initial 80x24 grid so any scroll
+        // event before the first resize tick still encodes coherent
+        // coordinates. The resize watcher refreshes this whenever
+        // the widget's pixel allocation changes.
+        mouse_encoder.set_size(
+            u32::from(initial_cols) * cell_width_px,
+            u32::from(initial_rows) * cell_height_px,
+            cell_width_px,
+            cell_height_px,
+        );
+
         let state = Rc::new(RefCell::new(PaneState {
             terminal,
             effects,
@@ -257,6 +276,7 @@ impl PaneWidget {
             cell_width_units,
             last_cols: initial_cols,
             last_rows: initial_rows,
+            mouse_encoder,
         }));
 
         let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
@@ -667,6 +687,15 @@ fn maybe_apply_resize(
         Ok(()) => {
             state_mut.last_cols = cols;
             state_mut.last_rows = rows;
+            // Keep the mouse encoder's screen geometry in sync so
+            // scroll events report cell coordinates against the
+            // current grid, not the stale 80x24 default.
+            state_mut.mouse_encoder.set_size(
+                cols_u32.saturating_mul(cw),
+                rows_u32.saturating_mul(ch),
+                cw,
+                ch,
+            );
             let px_w = u16::try_from(cols_u32.saturating_mul(cw)).unwrap_or(u16::MAX);
             let px_h = u16::try_from(rows_u32.saturating_mul(ch)).unwrap_or(u16::MAX);
             let _ = resize_tx.send(Winsize::new(cols, rows, px_w, px_h));
