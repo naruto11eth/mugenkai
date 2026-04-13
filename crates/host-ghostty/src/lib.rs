@@ -5,9 +5,11 @@
 mod effects;
 mod error;
 mod formatter;
+mod mouse;
 mod terminal;
 
 pub use effects::{EffectsHandle, TerminalEvent};
 pub use error::GhosttyError;
 pub use formatter::{Formatter, OutputFormat};
+pub use mouse::{MouseAction, MouseButton, MouseEncoder};
 pub use terminal::{CursorPosition, Terminal};
