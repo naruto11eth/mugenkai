@@ -569,4 +569,36 @@ mod tests {
             "a<span background=\"#d3d7cf\" foreground=\"#000000\">&lt;</span>b"
         );
     }
+
+    /// Regression: cursor at a column that coincides with a span
+    /// boundary used to insert an extra space placeholder before the
+    /// boundary, shifting every following character right by one
+    /// cell and making vim's content jiggle as the cursor blinked.
+    /// The fix is for `splice_cursor` to skip past the tag and
+    /// splice on the next rendered character instead.
+    #[test]
+    fn splice_cursor_at_span_boundary_does_not_pad_with_space() {
+        let markup = "<span foreground=\"#ff0000\">hello</span><span foreground=\"#00ff00\">world</span>";
+        let out = splice_cursor(markup, 0, 5, &CursorSpan::default_block());
+        // Cursor should wrap the 'w' of "world" — the first character
+        // of the second span — without inserting any extra space
+        // before the </span>.
+        assert_eq!(
+            out,
+            "<span foreground=\"#ff0000\">hello</span><span foreground=\"#00ff00\"><span background=\"#d3d7cf\" foreground=\"#000000\">w</span>orld</span>"
+        );
+    }
+
+    /// Regression: cursor at column 0 of a row that begins with a
+    /// styled run used to emit a leading space placeholder. The
+    /// next character should be wrapped instead.
+    #[test]
+    fn splice_cursor_at_column_zero_of_styled_row() {
+        let markup = "<span foreground=\"#ff0000\">red</span>";
+        let out = splice_cursor(markup, 0, 0, &CursorSpan::default_block());
+        assert_eq!(
+            out,
+            "<span foreground=\"#ff0000\"><span background=\"#d3d7cf\" foreground=\"#000000\">r</span>ed</span>"
+        );
+    }
 }
