@@ -244,12 +244,29 @@ where
 
 fn key_to_bytes(keyval: gdk::Key, modifiers: gdk::ModifierType) -> Option<Vec<u8>> {
     let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+    let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
     let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
 
+    // Ctrl+Shift+<anything> is reserved for window-level
+    // accelerators (split H/V, close pane, new tab, etc.).
+    // Terminal control bytes are Ctrl+letter — shift doesn't
+    // participate, so losing Ctrl+Shift+X to the accelerator
+    // system is safe. Returning None lets the capture-phase key
+    // controller return Proceed so GTK's shortcut dispatch fires.
+    if ctrl && shift {
+        return None;
+    }
+
+    // Ctrl+Tab / Ctrl+Shift+Tab are reserved for focus cycling
+    // between panes. Tab alone still sends `\t` to the PTY.
+    // (Ctrl+Shift+Tab is already caught above, but we handle the
+    // Tab keyval here for clarity and to cover any GDK variant
+    // that reports ISO_Left_Tab with only Ctrl held.)
+    if ctrl && matches!(keyval, gdk::Key::Tab | gdk::Key::ISO_Left_Tab) {
+        return None;
+    }
+
     // Ctrl+Q is reserved for the window's `win.quit` accelerator.
-    // We return None here so the capture-phase key controller
-    // returns `Propagation::Proceed`, letting GTK's shortcut
-    // dispatch fire the quit action.
     if ctrl
         && !alt
         && let Some(ch) = keyval.to_unicode()
@@ -259,7 +276,7 @@ fn key_to_bytes(keyval: gdk::Key, modifiers: gdk::ModifierType) -> Option<Vec<u8
     }
 
     // Control + letter -> control byte (covers everything except
-    // the reserved Ctrl+Q above).
+    // the reserved combos above).
     if ctrl
         && !alt
         && let Some(ch) = keyval.to_unicode()
@@ -447,6 +464,21 @@ async fn worker_main(
                     }
                     None => break,
                 }
+            }
+
+            // Periodic wakeup so the shutdown_rx check at the top
+            // of the loop fires even when the shell is idle and
+            // nothing is coming in via the write channel. Without
+            // this, `close_focused` followed by `worker.join()`
+            // in PaneController::drop deadlocks the GTK main
+            // thread: the shutdown signal never reaches the
+            // select because glib's timeout_add_local closure
+            // holds a clone of write_tx alive, so write_rx.recv()
+            // never returns None, and child.read() stays blocked
+            // on an idle pty.
+            () = tokio::time::sleep(Duration::from_millis(50)) => {
+                // No-op — the check at the top of `loop` handles
+                // the actual shutdown observation.
             }
         }
     }
