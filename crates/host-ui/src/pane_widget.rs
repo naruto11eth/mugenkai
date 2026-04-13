@@ -344,6 +344,16 @@ fn key_to_bytes(keyval: gdk::Key, modifiers: gdk::ModifierType) -> Option<Vec<u8
         return Some(vec![byte]);
     }
 
+    // Ctrl + anything-that-isn't-a-letter is reserved for window
+    // accelerators (Ctrl+Comma = open settings, Ctrl+= / Ctrl+-
+    // reserved for future font-size bindings). Returning None
+    // lets the capture-phase controller propagate so GTK's
+    // shortcut dispatch fires instead of sending the raw char
+    // to the PTY.
+    if ctrl && !alt {
+        return None;
+    }
+
     match keyval {
         gdk::Key::Return | gdk::Key::KP_Enter => Some(b"\r".to_vec()),
         gdk::Key::Tab => Some(b"\t".to_vec()),
