@@ -148,6 +148,10 @@ impl Default for PaneConfig {
     fn default() -> Self {
         Self {
             focus_ring: true,
+            // Very dark navy (~ Tailwind blue-950). Stands out
+            // against both light and dark terminal themes as
+            // clearly "window chrome" rather than competing with
+            // terminal content.
             focus_ring_color: "#1e40af".into(),
             split_ratio: 0.5,
         }
@@ -355,9 +359,7 @@ impl MugenkaiConfig {
             "mugenkai-keybinding-close-tab" => self.keybindings.close_tab = value.into(),
             "mugenkai-keybinding-next-tab" => self.keybindings.next_tab = value.into(),
             "mugenkai-keybinding-prev-tab" => self.keybindings.prev_tab = value.into(),
-            "mugenkai-keybinding-open-settings" => {
-                self.keybindings.open_settings = value.into();
-            }
+            "mugenkai-keybinding-open-settings" => self.keybindings.open_settings = value.into(),
 
             // ─── cursor ──────────────────────────────────────
             "mugenkai-cursor-style" => {
@@ -500,14 +502,14 @@ fn normalize_key(key: &str) -> String {
         "left" => "Left".into(),
         "right" => "Right".into(),
         "comma" => "comma".into(),
-        "period" => "period".into(),
+        "period" | "dot" => "period".into(),
         "semicolon" => "semicolon".into(),
-        "apostrophe" => "apostrophe".into(),
+        "apostrophe" | "quote" => "apostrophe".into(),
         "slash" => "slash".into(),
         "backslash" => "backslash".into(),
         "minus" => "minus".into(),
-        "equal" => "equal".into(),
-        "grave" => "grave".into(),
+        "equal" | "equals" => "equal".into(),
+        "grave" | "backtick" => "grave".into(),
         other => other.to_string(),
     }
 }
@@ -562,6 +564,7 @@ mod tests {
         assert_eq!(cfg.cursor.blink_interval_ms, 530);
         assert_eq!(cfg.cursor.color, "#d3d7cf");
         assert!(cfg.pane.focus_ring);
+        assert_eq!(cfg.pane.focus_ring_color, "#1e40af");
     }
 
     #[test]
@@ -719,6 +722,32 @@ mod tests {
     #[test]
     fn to_gtk_accelerator_single_key_no_mods() {
         assert_eq!(to_gtk_accelerator("f11").unwrap(), "f11");
+    }
+
+    #[test]
+    fn dsl_round_trip_preserves_defaults() {
+        let cfg = MugenkaiConfig::default();
+        let text = cfg.to_dsl_string();
+        let reparsed = MugenkaiConfig::parse_str(&text);
+        assert_eq!(cfg, reparsed);
+    }
+
+    #[test]
+    fn dsl_round_trip_preserves_custom_values() {
+        let mut cfg = MugenkaiConfig::default();
+        cfg.keybindings.quit = "ctrl+escape".into();
+        cfg.keybindings.split_horizontal = "alt+shift+right".into();
+        cfg.cursor.style = CursorStyle::Underline;
+        cfg.cursor.blink = false;
+        cfg.cursor.blink_interval_ms = 250;
+        cfg.cursor.color = "#ff8800".into();
+        cfg.pane.focus_ring = false;
+        cfg.pane.focus_ring_color = "#00ff00".into();
+        cfg.pane.split_ratio = 0.3;
+
+        let text = cfg.to_dsl_string();
+        let reparsed = MugenkaiConfig::parse_str(&text);
+        assert_eq!(cfg, reparsed);
     }
 
     #[test]
