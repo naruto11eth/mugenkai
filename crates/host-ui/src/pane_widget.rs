@@ -59,7 +59,17 @@ struct PaneState {
     bell_count: u64,
     title_changed_count: u64,
     exited: bool,
+    /// Whether the block cursor is currently drawn (blink phase).
+    /// Flipped by the 30ms tick once the blink interval elapses.
+    cursor_blink_on: bool,
+    /// Timestamp of the last blink state toggle. Used to throttle
+    /// the toggle to `CURSOR_BLINK_INTERVAL`.
+    cursor_blink_last_toggle: std::time::Instant,
 }
+
+/// How long the cursor stays in each blink phase. 530ms is what
+/// xterm, urxvt, and most Linux terminal emulators use by default.
+const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 impl Drop for PaneState {
     fn drop(&mut self) {
@@ -145,6 +155,8 @@ impl PaneWidget {
             bell_count: 0,
             title_changed_count: 0,
             exited: false,
+            cursor_blink_on: true,
+            cursor_blink_last_toggle: std::time::Instant::now(),
         }));
 
         let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
@@ -317,6 +329,7 @@ fn drain_pty_bytes(
     scroller: &gtk4::ScrolledWindow,
 ) -> glib::ControlFlow {
     let mut had_input = false;
+    let mut blink_flipped = false;
     let mut write_pty_responses: Vec<Vec<u8>> = Vec::new();
 
     {
@@ -339,7 +352,20 @@ fn drain_pty_bytes(
             }
         }
 
+        // PTY activity resets the blink to visible and restarts
+        // the interval so the cursor stays solid while the user
+        // is typing. When the shell goes idle, the next tick
+        // that crosses CURSOR_BLINK_INTERVAL starts blinking.
         if had_input {
+            state_mut.cursor_blink_on = true;
+            state_mut.cursor_blink_last_toggle = std::time::Instant::now();
+        } else if state_mut.cursor_blink_last_toggle.elapsed() >= CURSOR_BLINK_INTERVAL {
+            state_mut.cursor_blink_on = !state_mut.cursor_blink_on;
+            state_mut.cursor_blink_last_toggle = std::time::Instant::now();
+            blink_flipped = true;
+        }
+
+        if had_input || blink_flipped {
             refresh_labels(&state_mut, status_label, screen_label);
         }
     }
@@ -383,11 +409,13 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
         Ok(html) => {
             let mut markup = html_to_pango_markup(&html);
             // Splice a block cursor at the terminal's current
-            // cursor position (if visible). Must run after the
-            // HTML → pango translation because splice_cursor
-            // walks pango tags, not HTML tags.
+            // cursor position. Must run after the HTML → pango
+            // translation because splice_cursor walks pango tags,
+            // not HTML tags. Only splice when (a) the terminal's
+            // cursor is visible per DEC mode 25 AND (b) the blink
+            // phase is currently "on".
             let cursor = state.terminal.cursor_position();
-            if cursor.visible {
+            if cursor.visible && state.cursor_blink_on {
                 markup = splice_cursor(&markup, cursor.row as usize, cursor.col as usize);
             }
             screen_label.set_markup(&markup);
