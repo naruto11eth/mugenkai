@@ -71,6 +71,7 @@ pub struct KeyBindings {
     pub close_tab: String,
     pub next_tab: String,
     pub prev_tab: String,
+    pub open_settings: String,
 }
 
 impl Default for KeyBindings {
@@ -86,6 +87,7 @@ impl Default for KeyBindings {
             close_tab: "ctrl+shift+q".into(),
             next_tab: "ctrl+page_down".into(),
             prev_tab: "ctrl+page_up".into(),
+            open_settings: "ctrl+comma".into(),
         }
     }
 }
@@ -249,6 +251,9 @@ impl MugenkaiConfig {
             "mugenkai-keybinding-close-tab" => self.keybindings.close_tab = value.into(),
             "mugenkai-keybinding-next-tab" => self.keybindings.next_tab = value.into(),
             "mugenkai-keybinding-prev-tab" => self.keybindings.prev_tab = value.into(),
+            "mugenkai-keybinding-open-settings" => {
+                self.keybindings.open_settings = value.into();
+            }
 
             // ─── cursor ──────────────────────────────────────
             "mugenkai-cursor-style" => {
