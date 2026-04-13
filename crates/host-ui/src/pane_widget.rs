@@ -92,6 +92,21 @@ pub struct PaneWidget {
     write_tx: PaneInputSender,
     _state: Rc<RefCell<PaneState>>,
     _controller: PaneController,
+    // The glib timeout source that runs drain_pty_bytes every
+    // 30ms. Wrapped in Option so Drop can take() and remove() it
+    // — removing releases the closure (and its write_tx clone,
+    // its state Rc clone, and its label clones), which in turn
+    // lets PaneState drop cleanly instead of waiting for the
+    // whole GTK main loop to exit.
+    timer_source: Option<glib::SourceId>,
+}
+
+impl Drop for PaneWidget {
+    fn drop(&mut self) {
+        if let Some(source) = self.timer_source.take() {
+            source.remove();
+        }
+    }
 }
 
 struct PaneController {
@@ -212,7 +227,7 @@ impl PaneWidget {
         let screen_tick = screen_label.clone();
         let scroller_tick = scroller.clone();
         let write_tx_tick = write_tx.clone();
-        glib::timeout_add_local(Duration::from_millis(30), move || {
+        let timer_source = glib::timeout_add_local(Duration::from_millis(30), move || {
             drain_pty_bytes(
                 &pty_bytes_rx,
                 &state_tick,
@@ -228,6 +243,7 @@ impl PaneWidget {
             write_tx,
             _state: state,
             _controller: controller,
+            timer_source: Some(timer_source),
         }
     }
 
