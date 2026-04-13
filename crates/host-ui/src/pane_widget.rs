@@ -277,6 +277,17 @@ impl PaneWidget {
         self.write_tx.clone()
     }
 
+    /// True once the pane's shell process has exited (typed `exit`,
+    /// Ctrl+D, killed externally, etc.). Set by the 30ms tick when
+    /// the pty byte channel becomes disconnected.
+    ///
+    /// The `SplitContainer` reaper polls this every 200ms and
+    /// removes any pane that reports true.
+    #[must_use]
+    pub fn has_exited(&self) -> bool {
+        self.state.borrow().exited
+    }
+
     /// Mark this pane as focused or unfocused from the tree's
     /// perspective. Only focused panes render a cursor; others
     /// stay cursor-less.
@@ -434,19 +445,34 @@ fn drain_pty_bytes(
     {
         let mut state_mut = state.borrow_mut();
 
-        while let Ok(bytes) = pty_bytes_rx.try_recv() {
-            state_mut.terminal.vt_write(&bytes);
-            had_input = true;
+        loop {
+            match pty_bytes_rx.try_recv() {
+                Ok(bytes) => {
+                    state_mut.terminal.vt_write(&bytes);
+                    had_input = true;
 
-            let mut events: Vec<TerminalEvent> = Vec::new();
-            while let Ok(ev) = state_mut.effects_rx.try_recv() {
-                events.push(ev);
-            }
-            for ev in events {
-                match ev {
-                    TerminalEvent::Bell => state_mut.bell_count += 1,
-                    TerminalEvent::TitleChanged => state_mut.title_changed_count += 1,
-                    TerminalEvent::WritePty(bytes) => write_pty_responses.push(bytes),
+                    let mut events: Vec<TerminalEvent> = Vec::new();
+                    while let Ok(ev) = state_mut.effects_rx.try_recv() {
+                        events.push(ev);
+                    }
+                    for ev in events {
+                        match ev {
+                            TerminalEvent::Bell => state_mut.bell_count += 1,
+                            TerminalEvent::TitleChanged => state_mut.title_changed_count += 1,
+                            TerminalEvent::WritePty(bytes) => write_pty_responses.push(bytes),
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                // The worker thread closed pty_bytes_tx, which only
+                // happens after its `child.read` returned Ok(0) —
+                // i.e. the shell exited (`exit`, Ctrl+D, kill, etc).
+                // Mark the pane as dead so the reaper timer in
+                // window.rs can remove it on the next poll.
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    state_mut.exited = true;
+                    state_mut.needs_refresh = true;
+                    break;
                 }
             }
         }
