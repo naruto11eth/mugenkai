@@ -119,12 +119,17 @@ impl Child {
     /// Read up to `buf.len()` bytes from the PTY master.
     ///
     /// Returns `Ok(0)` when the child closes its end of the PTY
-    /// (EOF), which happens on child exit.
+    /// (EOF), which happens on child exit. On Linux, the kernel
+    /// reports slave-side closure as `EIO` from the master read
+    /// rather than the POSIX-ish 0-byte return, so we map `EIO`
+    /// to `Ok(0)` here too — both signals mean "child is gone,
+    /// stop reading".
     ///
     /// # Errors
     ///
-    /// Any OS error other than `WouldBlock` (which is handled
-    /// internally by retrying on readable readiness).
+    /// Any OS error other than `EIO`, `EAGAIN`, and `WouldBlock`
+    /// (the last two are handled internally by retrying on
+    /// readable readiness).
     pub async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             let mut guard = self.master.readable().await?;
@@ -134,12 +139,20 @@ impl Child {
                 // returns -1 on error (which try_io maps to Err) or
                 // a byte count.
                 let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-                if n < 0 {
-                    Err(io::Error::last_os_error())
-                } else {
+                if n >= 0 {
                     #[allow(clippy::cast_sign_loss)]
-                    Ok(n as usize)
+                    return Ok(n as usize);
                 }
+                let err = io::Error::last_os_error();
+                // Linux convention: EIO from a PTY master read
+                // means the slave side closed and the child
+                // exited. Collapse to EOF so the caller's read
+                // loop sees the same signal as on every other
+                // POSIX.
+                if err.raw_os_error() == Some(libc::EIO) {
+                    return Ok(0);
+                }
+                Err(err)
             }) {
                 Ok(result) => return result,
                 Err(_would_block) => continue,
