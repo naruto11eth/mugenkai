@@ -11,6 +11,7 @@
 mod app;
 mod pane_widget;
 mod pango_markup;
+mod split_container;
 mod window;
 
 pub use app::{APP_ID, MugenkaiApplication};

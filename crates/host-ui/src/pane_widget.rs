@@ -210,15 +210,30 @@ impl Default for PaneWidget {
 /// Attach a `gtk4::EventControllerKey` to `widget` that translates
 /// keyboard events to PTY byte sequences and forwards them via
 /// `write_tx`.
+#[allow(dead_code)]
 pub fn install_pane_key_controller<W: gtk4::prelude::IsA<gtk4::Widget>>(
     widget: &W,
     write_tx: PaneInputSender,
 ) {
+    install_pane_key_controller_dynamic(widget, move || Some(write_tx.clone()));
+}
+
+/// Dynamic variant: the key controller looks up the current PTY
+/// input sender on every keypress by calling `sender_fn`. Used by
+/// multi-pane layouts where the target PTY is whichever pane has
+/// tree-level focus at the moment the key fires.
+pub fn install_pane_key_controller_dynamic<W, F>(widget: &W, sender_fn: F)
+where
+    W: gtk4::prelude::IsA<gtk4::Widget>,
+    F: Fn() -> Option<PaneInputSender> + 'static,
+{
     let key_controller = gtk4::EventControllerKey::new();
     key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
     key_controller.connect_key_pressed(move |_controller, keyval, _keycode, modifiers| {
         if let Some(bytes) = key_to_bytes(keyval, modifiers) {
-            let _ = write_tx.send(bytes);
+            if let Some(tx) = sender_fn() {
+                let _ = tx.send(bytes);
+            }
             glib::Propagation::Stop
         } else {
             glib::Propagation::Proceed
