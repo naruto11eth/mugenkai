@@ -30,14 +30,73 @@ const OUTER_OPEN: &str = "<div style=\"font-family: monospace; white-space: pre;
 const OUTER_CLOSE: &str = "</div>";
 const INNER_PREFIX: &str = "<div style=\"display: inline;";
 
-/// Pango markup fragments used to draw a block cursor. Foreground
-/// black on a light grey background — visible on both dark and
-/// light terminal themes without looking like a "selected cell".
-const CURSOR_OPEN: &str = "<span background=\"#d3d7cf\" foreground=\"#000000\">";
 const CURSOR_CLOSE: &str = "</span>";
 
-/// Splice a block cursor into an already-translated pango markup
+/// User-configurable cursor rendering knobs.
+///
+/// Sourced from [`host_core::CursorConfig`] but decoupled here
+/// to keep the `pango_markup` module free of host-core types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    /// Filled block: background color fills the cell.
+    Block,
+    /// Underline: a single line at the bottom of the cell.
+    Underline,
+}
+
+/// Pango span tag fragments for a specific cursor rendering.
+///
+/// Callers compute these once per refresh from their
+/// `CursorConfig` and pass them into [`splice_cursor`] so the
+/// splicer stays pure-logic (no config types).
+#[derive(Debug, Clone)]
+pub struct CursorSpan {
+    /// The opening `<span ...>` tag — already populated with the
+    /// right pango attributes for the configured shape + colors.
+    pub open: String,
+}
+
+impl CursorSpan {
+    /// Build a cursor span from user-facing cursor config.
+    ///
+    /// `bg_color` and `fg_color` are `#rrggbb` strings; we trust
+    /// the caller to have validated them via
+    /// [`host_core::CursorConfig`] or similar.
+    #[must_use]
+    pub fn new(shape: CursorShape, bg_color: &str, fg_color: &str) -> Self {
+        let open = match shape {
+            CursorShape::Block => {
+                // Block: background fill + readable foreground.
+                format!("<span background=\"{bg_color}\" foreground=\"{fg_color}\">")
+            }
+            CursorShape::Underline => {
+                // Underline: keep the cell's existing foreground,
+                // add a pango underline with the cursor's primary
+                // color so it's visible on both light and dark
+                // themes. Pango underlines stretch across the
+                // span's advance width, which for a single cell
+                // matches the block's footprint.
+                format!("<span underline=\"single\" underline_color=\"{bg_color}\">")
+            }
+        };
+        Self { open }
+    }
+
+    /// Default block cursor with the legacy colors — used by
+    /// tests and as a fallback when config is unavailable.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn default_block() -> Self {
+        Self::new(CursorShape::Block, "#d3d7cf", "#000000")
+    }
+}
+
+/// Splice a cursor span into an already-translated pango markup
 /// string at the given `(row, col)` position.
+///
+/// The cursor's appearance (block vs underline, colors) is baked
+/// into `span`. Callers that want the legacy block cursor can
+/// pass `&CursorSpan::default_block()`.
 ///
 /// Rows are separated by `\n` and columns count rendered characters
 /// only — tags (`<...>`) and HTML entities (`&lt;` `&gt;` `&amp;`)
@@ -46,12 +105,14 @@ const CURSOR_CLOSE: &str = "</span>";
 /// If the cursor position is past the visible content (common when
 /// a shell is waiting for input on an otherwise-empty row), the
 /// splicer pads with spaces up to the column and appends the cursor
-/// block at the end.
-///
-/// Returns the input unchanged when `(row, col)` is `(u32::MAX, _)`
-/// or out of sane bounds — this exists so callers can pass a
-/// sentinel for "cursor hidden".
-pub fn splice_cursor(markup: &str, target_row: usize, target_col: usize) -> String {
+/// span at the end.
+pub fn splice_cursor(
+    markup: &str,
+    target_row: usize,
+    target_col: usize,
+    span: &CursorSpan,
+) -> String {
+    let cursor_open = span.open.as_str();
     let mut out = String::with_capacity(markup.len() + 64);
     let mut row: usize = 0;
     let mut col: usize = 0;
@@ -74,7 +135,7 @@ pub fn splice_cursor(markup: &str, target_row: usize, target_col: usize) -> Stri
             // space BEFORE the tag so the following text renders
             // with its intended style.
             if !spliced && row == target_row && col == target_col {
-                out.push_str(CURSOR_OPEN);
+                out.push_str(cursor_open);
                 out.push(' ');
                 out.push_str(CURSOR_CLOSE);
                 spliced = true;
@@ -94,7 +155,7 @@ pub fn splice_cursor(markup: &str, target_row: usize, target_col: usize) -> Stri
                 for _ in col..target_col {
                     out.push(' ');
                 }
-                out.push_str(CURSOR_OPEN);
+                out.push_str(cursor_open);
                 out.push(' ');
                 out.push_str(CURSOR_CLOSE);
                 spliced = true;
@@ -117,7 +178,7 @@ pub fn splice_cursor(markup: &str, target_row: usize, target_col: usize) -> Stri
                 }
             }
             if !spliced && row == target_row && col == target_col {
-                out.push_str(CURSOR_OPEN);
+                out.push_str(cursor_open);
                 out.push_str(&entity);
                 out.push_str(CURSOR_CLOSE);
                 spliced = true;
@@ -130,7 +191,7 @@ pub fn splice_cursor(markup: &str, target_row: usize, target_col: usize) -> Stri
 
         // Normal rendered character.
         if !spliced && row == target_row && col == target_col {
-            out.push_str(CURSOR_OPEN);
+            out.push_str(cursor_open);
             out.push(ch);
             out.push_str(CURSOR_CLOSE);
             spliced = true;
@@ -153,7 +214,7 @@ pub fn splice_cursor(markup: &str, target_row: usize, target_col: usize) -> Stri
         for _ in col..target_col {
             out.push(' ');
         }
-        out.push_str(CURSOR_OPEN);
+        out.push_str(cursor_open);
         out.push(' ');
         out.push_str(CURSOR_CLOSE);
     }
@@ -422,7 +483,7 @@ mod tests {
 
     #[test]
     fn splice_cursor_at_start_of_plain_text() {
-        let out = splice_cursor("hello", 0, 0);
+        let out = splice_cursor("hello", 0, 0, &CursorSpan::default_block());
         assert_eq!(
             out,
             "<span background=\"#d3d7cf\" foreground=\"#000000\">h</span>ello"
@@ -431,7 +492,7 @@ mod tests {
 
     #[test]
     fn splice_cursor_mid_row() {
-        let out = splice_cursor("hello", 0, 2);
+        let out = splice_cursor("hello", 0, 2, &CursorSpan::default_block());
         assert_eq!(
             out,
             "he<span background=\"#d3d7cf\" foreground=\"#000000\">l</span>lo"
@@ -440,7 +501,7 @@ mod tests {
 
     #[test]
     fn splice_cursor_on_second_row() {
-        let out = splice_cursor("line0\nline1", 1, 3);
+        let out = splice_cursor("line0\nline1", 1, 3, &CursorSpan::default_block());
         assert_eq!(
             out,
             "line0\nlin<span background=\"#d3d7cf\" foreground=\"#000000\">e</span>1"
@@ -452,7 +513,7 @@ mod tests {
         // Row 0 has only 3 chars but cursor is at col 6 → emit 3
         // unformatted padding spaces then the cursor block as a
         // single-space span.
-        let out = splice_cursor("abc\nxyz", 0, 6);
+        let out = splice_cursor("abc\nxyz", 0, 6, &CursorSpan::default_block());
         assert_eq!(
             out,
             "abc   <span background=\"#d3d7cf\" foreground=\"#000000\"> </span>\nxyz"
@@ -461,7 +522,7 @@ mod tests {
 
     #[test]
     fn splice_cursor_past_all_content_appends() {
-        let out = splice_cursor("one\ntwo", 4, 2);
+        let out = splice_cursor("one\ntwo", 4, 2, &CursorSpan::default_block());
         assert_eq!(
             out,
             "one\ntwo\n\n\n  <span background=\"#d3d7cf\" foreground=\"#000000\"> </span>"
@@ -469,9 +530,29 @@ mod tests {
     }
 
     #[test]
+    fn splice_cursor_underline_style_uses_pango_underline() {
+        let span = CursorSpan::new(CursorShape::Underline, "#ff8800", "#000000");
+        let out = splice_cursor("hello", 0, 2, &span);
+        assert_eq!(
+            out,
+            "he<span underline=\"single\" underline_color=\"#ff8800\">l</span>lo"
+        );
+    }
+
+    #[test]
+    fn splice_cursor_custom_block_colors() {
+        let span = CursorSpan::new(CursorShape::Block, "#ff0000", "#ffffff");
+        let out = splice_cursor("hi", 0, 0, &span);
+        assert_eq!(
+            out,
+            "<span background=\"#ff0000\" foreground=\"#ffffff\">h</span>i"
+        );
+    }
+
+    #[test]
     fn splice_cursor_inside_existing_span_uses_nesting() {
         let markup = "<span foreground=\"#ff0000\">red</span>";
-        let out = splice_cursor(markup, 0, 1);
+        let out = splice_cursor(markup, 0, 1, &CursorSpan::default_block());
         // The cursor span nests inside the existing span, which
         // pango renders as "r" with red foreground then "e" with
         // cursor style (inner span wins for the attributes it
@@ -485,7 +566,7 @@ mod tests {
     #[test]
     fn splice_cursor_on_entity_counts_as_single_char() {
         let markup = "a&lt;b";
-        let out = splice_cursor(markup, 0, 1);
+        let out = splice_cursor(markup, 0, 1, &CursorSpan::default_block());
         assert_eq!(
             out,
             "a<span background=\"#d3d7cf\" foreground=\"#000000\">&lt;</span>b"

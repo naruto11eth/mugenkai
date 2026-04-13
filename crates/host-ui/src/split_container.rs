@@ -23,6 +23,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
+use host_core::MugenkaiConfig;
 use host_core::pane_tree::{Node, Orientation, PaneId, PaneTree, SplitDirection};
 
 use crate::pane_widget::{PaneInputSender, PaneWidget};
@@ -40,14 +41,26 @@ pub struct SplitContainer {
     tree: Rc<RefCell<PaneTree>>,
     /// Live [`PaneWidget`] per [`PaneId`]. Grows on split, shrinks on close.
     panes: Rc<RefCell<HashMap<PaneId, PaneWidget>>>,
+    /// Config shared with every new pane so splits inherit the
+    /// user's cursor + keybinding preferences.
+    config: Rc<MugenkaiConfig>,
 }
 
 impl SplitContainer {
-    /// Build a new `SplitContainer` containing one pane (id 1).
+    /// Build a new `SplitContainer` with default config.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_config(Rc::new(MugenkaiConfig::default()))
+    }
+
+    /// Build a new `SplitContainer` containing one pane (id 1),
+    /// with cursor and split-ratio settings inherited from the
+    /// user's config. The same `Rc<MugenkaiConfig>` is shared
+    /// across every future pane spawned by [`split_focused`](Self::split_focused).
+    #[must_use]
+    pub fn with_config(config: Rc<MugenkaiConfig>) -> Self {
         let tree = Rc::new(RefCell::new(PaneTree::new()));
-        let root_pane = PaneWidget::new();
+        let root_pane = PaneWidget::with_cursor_config(&config.cursor);
         let root_id = tree.borrow().focused();
 
         let mut map = HashMap::new();
@@ -60,7 +73,12 @@ impl SplitContainer {
             .vexpand(true)
             .build();
 
-        let container = Self { root, tree, panes };
+        let container = Self {
+            root,
+            tree,
+            panes,
+            config,
+        };
         container.rematerialize();
         container
     }
@@ -87,10 +105,11 @@ impl SplitContainer {
         Rc::clone(&self.panes)
     }
 
-    /// Split the focused pane in the given direction.
+    /// Split the focused pane in the given direction. The new
+    /// pane inherits cursor settings from the container's config.
     pub fn split_focused(&self, direction: SplitDirection) {
         let new_id = self.tree.borrow_mut().split(direction);
-        let new_pane = PaneWidget::new();
+        let new_pane = PaneWidget::with_cursor_config(&self.config.cursor);
         self.panes.borrow_mut().insert(new_id, new_pane);
         self.rematerialize();
     }

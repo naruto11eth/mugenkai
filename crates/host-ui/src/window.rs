@@ -4,6 +4,7 @@ use adw::prelude::*;
 use gtk4::{gio, glib};
 
 use host_core::pane_tree::SplitDirection;
+use host_core::{MugenkaiConfig, to_gtk_accelerator};
 
 use crate::pane_widget::install_pane_key_controller_dynamic;
 use crate::split_container::SplitContainer;
@@ -32,8 +33,22 @@ pub struct MugenkaiWindow {
 }
 
 impl MugenkaiWindow {
+    /// Build a window with default config.
     #[must_use]
     pub fn new(app: &adw::Application) -> Self {
+        Self::with_config(app, &Rc::new(MugenkaiConfig::default()))
+    }
+
+    /// Build a window using the user's configuration.
+    ///
+    /// All keybindings (`split-h`, `split-v`, `close-pane`,
+    /// `focus-next`, `focus-prev`, `quit`, `new-tab`, `close-tab`,
+    /// `next-tab`, `prev-tab`) are registered as application
+    /// actions with accelerators taken from `config.keybindings`.
+    /// Cursor appearance is propagated to every pane spawned by
+    /// the window's [`SplitContainer`].
+    #[must_use]
+    pub fn with_config(app: &adw::Application, config: &Rc<MugenkaiConfig>) -> Self {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("mugenkai")
@@ -53,15 +68,13 @@ impl MugenkaiWindow {
         toolbar_view.add_top_bar(&tab_bar);
 
         // The split container is the ROOT of the pane tree for the
-        // initial tab. It owns one PaneWidget to start.
-        let container = Rc::new(SplitContainer::new());
+        // initial tab. Cursor config flows through to every pane.
+        let container = Rc::new(SplitContainer::with_config(Rc::clone(config)));
         let tab_page = tab_view.append(container.widget());
         tab_page.set_title("shell");
 
-        // Keyboard input: dynamic key controller looks up the
-        // currently focused pane's input sender on every
-        // keypress, which lets splits work naturally — typing
-        // always goes to whichever pane has tree-level focus.
+        // Dynamic key controller routes every keystroke to
+        // whichever pane currently has tree-level focus.
         let container_for_keys = Rc::clone(&container);
         install_pane_key_controller_dynamic(&window, move || {
             container_for_keys.focused_input_sender()
@@ -74,7 +87,7 @@ impl MugenkaiWindow {
 
         window.set_content(Some(&toast_overlay));
 
-        Self::install_shortcuts(&window, app, &container);
+        Self::install_shortcuts(&window, app, &container, config);
 
         Self {
             inner: window,
@@ -82,92 +95,50 @@ impl MugenkaiWindow {
         }
     }
 
-    /// Wire application-level actions:
-    ///
-    /// - `win.quit` (Ctrl+Q) — close the window
-    /// - `win.split-horizontal` (Ctrl+Shift+D) — split focused pane left/right
-    /// - `win.split-vertical` (Ctrl+Shift+R) — split focused pane top/bottom
-    /// - `win.close-pane` (Ctrl+Shift+W) — close focused pane; if last, close window
-    /// - `win.focus-next` (Ctrl+Tab) — cycle focus to next pane in layout order
-    /// - `win.focus-prev` (Ctrl+Shift+Tab) — cycle focus backwards
+    /// Wire application-level actions with user-configurable
+    /// accelerators.
     fn install_shortcuts(
         window: &adw::ApplicationWindow,
         app: &adw::Application,
         container: &Rc<SplitContainer>,
+        config: &MugenkaiConfig,
     ) {
-        // ─── quit ──────────────────────────────────────────────────
-        let quit_action = gio::SimpleAction::new("quit", None);
-        quit_action.connect_activate(glib::clone!(
-            #[weak]
+        let kb = &config.keybindings;
+
+        install_quit_action(window, app, &kb.quit);
+        install_split_action(
             window,
-            move |_, _| {
-                window.close();
-            }
-        ));
-        window.add_action(&quit_action);
-        app.set_accels_for_action("win.quit", &["<Primary>q"]);
-
-        // ─── split horizontal ─────────────────────────────────────
-        let split_h = gio::SimpleAction::new("split-horizontal", None);
-        {
-            let container = Rc::clone(container);
-            split_h.connect_activate(move |_, _| {
-                container.split_focused(SplitDirection::Right);
-            });
-        }
-        window.add_action(&split_h);
-        app.set_accels_for_action("win.split-horizontal", &["<Primary><Shift>d"]);
-
-        // ─── split vertical ───────────────────────────────────────
-        let split_v = gio::SimpleAction::new("split-vertical", None);
-        {
-            let container = Rc::clone(container);
-            split_v.connect_activate(move |_, _| {
-                container.split_focused(SplitDirection::Down);
-            });
-        }
-        window.add_action(&split_v);
-        app.set_accels_for_action("win.split-vertical", &["<Primary><Shift>r"]);
-
-        // ─── close pane ───────────────────────────────────────────
-        let close_pane = gio::SimpleAction::new("close-pane", None);
-        {
-            let container = Rc::clone(container);
-            close_pane.connect_activate(glib::clone!(
-                #[weak]
-                window,
-                move |_, _| {
-                    if !container.close_focused() {
-                        // Last pane in the tab — close the window.
-                        window.close();
-                    }
-                }
-            ));
-        }
-        window.add_action(&close_pane);
-        app.set_accels_for_action("win.close-pane", &["<Primary><Shift>w"]);
-
-        // ─── focus next ───────────────────────────────────────────
-        let focus_next = gio::SimpleAction::new("focus-next", None);
-        {
-            let container = Rc::clone(container);
-            focus_next.connect_activate(move |_, _| {
-                container.focus_next();
-            });
-        }
-        window.add_action(&focus_next);
-        app.set_accels_for_action("win.focus-next", &["<Primary>Tab"]);
-
-        // ─── focus prev ───────────────────────────────────────────
-        let focus_prev = gio::SimpleAction::new("focus-prev", None);
-        {
-            let container = Rc::clone(container);
-            focus_prev.connect_activate(move |_, _| {
-                container.focus_prev();
-            });
-        }
-        window.add_action(&focus_prev);
-        app.set_accels_for_action("win.focus-prev", &["<Primary><Shift>Tab"]);
+            app,
+            container,
+            "split-horizontal",
+            &kb.split_horizontal,
+            SplitDirection::Right,
+        );
+        install_split_action(
+            window,
+            app,
+            container,
+            "split-vertical",
+            &kb.split_vertical,
+            SplitDirection::Down,
+        );
+        install_close_pane_action(window, app, container, &kb.close_pane);
+        install_focus_action(
+            window,
+            app,
+            container,
+            "focus-next",
+            &kb.focus_next,
+            /* forward */ true,
+        );
+        install_focus_action(
+            window,
+            app,
+            container,
+            "focus-prev",
+            &kb.focus_prev,
+            /* forward */ false,
+        );
     }
 
     /// Show the window.
@@ -178,5 +149,98 @@ impl MugenkaiWindow {
     /// Expose the inner `adw::ApplicationWindow` for tests.
     pub fn inner(&self) -> &adw::ApplicationWindow {
         &self.inner
+    }
+}
+
+fn install_quit_action(window: &adw::ApplicationWindow, app: &adw::Application, accel_str: &str) {
+    let action = gio::SimpleAction::new("quit", None);
+    action.connect_activate(glib::clone!(
+        #[weak]
+        window,
+        move |_, _| {
+            window.close();
+        }
+    ));
+    window.add_action(&action);
+    set_accel(app, "win.quit", accel_str);
+}
+
+fn install_split_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    container: &Rc<SplitContainer>,
+    name: &str,
+    accel_str: &str,
+    direction: SplitDirection,
+) {
+    let action = gio::SimpleAction::new(name, None);
+    let container = Rc::clone(container);
+    action.connect_activate(move |_, _| {
+        container.split_focused(direction);
+    });
+    window.add_action(&action);
+    set_accel(app, &format!("win.{name}"), accel_str);
+}
+
+fn install_close_pane_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    container: &Rc<SplitContainer>,
+    accel_str: &str,
+) {
+    let action = gio::SimpleAction::new("close-pane", None);
+    let container = Rc::clone(container);
+    action.connect_activate(glib::clone!(
+        #[weak]
+        window,
+        move |_, _| {
+            if !container.close_focused() {
+                // Last pane in the tab — close the window.
+                window.close();
+            }
+        }
+    ));
+    window.add_action(&action);
+    set_accel(app, "win.close-pane", accel_str);
+}
+
+fn install_focus_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    container: &Rc<SplitContainer>,
+    name: &str,
+    accel_str: &str,
+    forward: bool,
+) {
+    let action = gio::SimpleAction::new(name, None);
+    let container = Rc::clone(container);
+    action.connect_activate(move |_, _| {
+        if forward {
+            container.focus_next();
+        } else {
+            container.focus_prev();
+        }
+    });
+    window.add_action(&action);
+    set_accel(app, &format!("win.{name}"), accel_str);
+}
+
+/// Translate a config-level accelerator string (`ctrl+shift+d`)
+/// into GTK format (`<Primary><Shift>d`) and register it against
+/// the application's action map. Skips registration (logs a
+/// warning) if the string is empty or can't be translated.
+fn set_accel(app: &adw::Application, action_name: &str, accel_str: &str) {
+    if accel_str.is_empty() {
+        return;
+    }
+    match to_gtk_accelerator(accel_str) {
+        Some(gtk_accel) => {
+            app.set_accels_for_action(action_name, &[gtk_accel.as_str()]);
+        }
+        None => {
+            eprintln!(
+                "[mugenkai] warning: could not translate accelerator \"{accel_str}\" for {action_name}"
+            );
+        }
     }
 }

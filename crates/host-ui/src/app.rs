@@ -4,6 +4,8 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk4::{gio, glib};
 
+use host_core::MugenkaiConfig;
+
 use crate::window::MugenkaiWindow;
 
 /// Reverse-DNS app id used for GTK's `application_id` and the desktop
@@ -12,17 +14,13 @@ pub const APP_ID: &str = "com.mugenkai.Mugenkai";
 
 /// Thin wrapper around `adw::Application`.
 ///
-/// Owns the application lifetime and wires the activation callback to
-/// construct a [`MugenkaiWindow`] on startup. Unlike a naive
-/// implementation, this struct also keeps the Rust wrapper structs
-/// alive in `windows` — otherwise the `_pane` field inside each
-/// `MugenkaiWindow` gets dropped the moment `connect_activate`
-/// returns, killing the pane worker thread and breaking any
-/// channel-based communication with the GTK side. The `adw::Window`
-/// would stay on screen (registered with the application) but the
-/// Rust half of the ownership graph would be gone.
+/// Owns the application lifetime and wires the activation callback
+/// to construct a [`MugenkaiWindow`] on startup. Loads the user's
+/// config once at construction and passes a shared `Rc` to every
+/// window — later phases may add reload semantics.
 pub struct MugenkaiApplication {
     inner: adw::Application,
+    config: Rc<MugenkaiConfig>,
     // RefCell for interior mutability from the non-mut
     // connect_activate closure; Rc so the closure and the outer
     // struct can both reach it.
@@ -30,28 +28,42 @@ pub struct MugenkaiApplication {
 }
 
 impl MugenkaiApplication {
+    /// Build a new application using default config.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_config(MugenkaiConfig::load())
+    }
+
+    /// Build a new application with an explicit config, useful
+    /// for tests or non-standard paths.
+    #[must_use]
+    pub fn with_config(config: MugenkaiConfig) -> Self {
         let inner = adw::Application::builder()
             .application_id(APP_ID)
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
 
         // NON_UNIQUE means every mugenkai invocation gets its own
-        // process instead of being routed to a running instance via
-        // DBus. We may want to flip this later for cmux-style
+        // process instead of being routed to a running instance
+        // via DBus. We may want to flip this later for cmux-style
         // multi-window semantics.
 
+        let config = Rc::new(config);
         let windows: Rc<RefCell<Vec<MugenkaiWindow>>> = Rc::default();
 
         let windows_clone = Rc::clone(&windows);
+        let config_clone = Rc::clone(&config);
         inner.connect_activate(move |app| {
-            let window = MugenkaiWindow::new(app);
+            let window = MugenkaiWindow::with_config(app, &config_clone);
             window.present();
             windows_clone.borrow_mut().push(window);
         });
 
-        Self { inner, windows }
+        Self {
+            inner,
+            config,
+            windows,
+        }
     }
 
     /// Run the application's main loop until exit. Blocking.
@@ -63,6 +75,12 @@ impl MugenkaiApplication {
     /// Expose the inner `adw::Application` for tests that need it.
     pub fn inner(&self) -> &adw::Application {
         &self.inner
+    }
+
+    /// Expose the loaded config for tests and diagnostics.
+    #[must_use]
+    pub fn config(&self) -> &MugenkaiConfig {
+        &self.config
     }
 
     /// Number of live window wrappers. Primarily for tests.

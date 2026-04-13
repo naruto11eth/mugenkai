@@ -46,7 +46,9 @@ use tokio::sync::mpsc as tokio_mpsc;
 use host_ghostty::{EffectsHandle, Formatter, OutputFormat, Terminal, TerminalEvent};
 use host_pty::{Child, SpawnOptions};
 
-use crate::pango_markup::{html_to_pango_markup, splice_cursor};
+use host_core::{CursorConfig as CoreCursorConfig, CursorStyle};
+
+use crate::pango_markup::{CursorShape, CursorSpan, html_to_pango_markup, splice_cursor};
 
 /// Cloneable sender that writes raw bytes to a pane's PTY child.
 pub type PaneInputSender = tokio_mpsc::UnboundedSender<Vec<u8>>;
@@ -59,17 +61,22 @@ struct PaneState {
     bell_count: u64,
     title_changed_count: u64,
     exited: bool,
-    /// Whether the block cursor is currently drawn (blink phase).
+    /// Whether the cursor is currently drawn (blink phase).
     /// Flipped by the 30ms tick once the blink interval elapses.
+    /// Always true when `cursor_config.blink` is false.
     cursor_blink_on: bool,
     /// Timestamp of the last blink state toggle. Used to throttle
-    /// the toggle to `CURSOR_BLINK_INTERVAL`.
+    /// the toggle to the configured blink interval.
     cursor_blink_last_toggle: std::time::Instant,
+    /// Pre-built pango span for the configured cursor shape +
+    /// colors. Captured at construction time; rebuilt if config
+    /// hot-reload lands later.
+    cursor_span: CursorSpan,
+    /// Blink cadence from config.
+    cursor_blink_interval: Duration,
+    /// Whether blinking is enabled at all.
+    cursor_blink_enabled: bool,
 }
-
-/// How long the cursor stays in each blink phase. 530ms is what
-/// xterm, urxvt, and most Linux terminal emulators use by default.
-const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 impl Drop for PaneState {
     fn drop(&mut self) {
@@ -104,8 +111,18 @@ impl Drop for PaneController {
 }
 
 impl PaneWidget {
+    /// Build a pane with default cursor settings. Used by tests
+    /// and stand-alone demos; production code uses
+    /// [`with_cursor_config`](Self::with_cursor_config).
     #[must_use]
     pub fn new() -> Self {
+        Self::with_cursor_config(&CoreCursorConfig::default())
+    }
+
+    /// Build a pane with cursor appearance driven by the user's
+    /// configuration.
+    #[must_use]
+    pub fn with_cursor_config(cursor_cfg: &CoreCursorConfig) -> Self {
         let vbox = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
             .spacing(6)
@@ -148,6 +165,16 @@ impl PaneWidget {
             .take_receiver()
             .expect("fresh effects handle must yield a receiver");
 
+        // Build the pango cursor span once from the user's
+        // cursor config. `cursor_shape_from` + the shape-aware
+        // CursorSpan constructor select Block vs Underline.
+        let cursor_shape = match cursor_cfg.style {
+            CursorStyle::Block => CursorShape::Block,
+            CursorStyle::Underline => CursorShape::Underline,
+        };
+        let cursor_span = CursorSpan::new(cursor_shape, &cursor_cfg.color, &cursor_cfg.text_color);
+        let cursor_blink_interval = Duration::from_millis(cursor_cfg.blink_interval_ms);
+
         let state = Rc::new(RefCell::new(PaneState {
             terminal,
             effects,
@@ -157,6 +184,9 @@ impl PaneWidget {
             exited: false,
             cursor_blink_on: true,
             cursor_blink_last_toggle: std::time::Instant::now(),
+            cursor_span,
+            cursor_blink_interval,
+            cursor_blink_enabled: cursor_cfg.blink,
         }));
 
         let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
@@ -355,11 +385,15 @@ fn drain_pty_bytes(
         // PTY activity resets the blink to visible and restarts
         // the interval so the cursor stays solid while the user
         // is typing. When the shell goes idle, the next tick
-        // that crosses CURSOR_BLINK_INTERVAL starts blinking.
+        // that crosses the configured blink interval starts
+        // blinking. If blinking is disabled in config, the
+        // cursor stays solid forever.
         if had_input {
             state_mut.cursor_blink_on = true;
             state_mut.cursor_blink_last_toggle = std::time::Instant::now();
-        } else if state_mut.cursor_blink_last_toggle.elapsed() >= CURSOR_BLINK_INTERVAL {
+        } else if state_mut.cursor_blink_enabled
+            && state_mut.cursor_blink_last_toggle.elapsed() >= state_mut.cursor_blink_interval
+        {
             state_mut.cursor_blink_on = !state_mut.cursor_blink_on;
             state_mut.cursor_blink_last_toggle = std::time::Instant::now();
             blink_flipped = true;
@@ -408,15 +442,20 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     match html {
         Ok(html) => {
             let mut markup = html_to_pango_markup(&html);
-            // Splice a block cursor at the terminal's current
-            // cursor position. Must run after the HTML → pango
+            // Splice the configured cursor at the terminal's
+            // current position. Must run after the HTML → pango
             // translation because splice_cursor walks pango tags,
             // not HTML tags. Only splice when (a) the terminal's
             // cursor is visible per DEC mode 25 AND (b) the blink
             // phase is currently "on".
             let cursor = state.terminal.cursor_position();
             if cursor.visible && state.cursor_blink_on {
-                markup = splice_cursor(&markup, cursor.row as usize, cursor.col as usize);
+                markup = splice_cursor(
+                    &markup,
+                    cursor.row as usize,
+                    cursor.col as usize,
+                    &state.cursor_span,
+                );
             }
             screen_label.set_markup(&markup);
         }
