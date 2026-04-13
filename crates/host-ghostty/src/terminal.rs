@@ -213,6 +213,31 @@ impl Terminal {
         }
         active
     }
+
+    /// Whether the alternate screen (DEC mode 1049 / 47 / 1047) is
+    /// currently active.
+    ///
+    /// True for full-screen TUI applications like vim, nano, less,
+    /// htop, tmux. False for normal shell prompts. `host-ui` uses
+    /// this to translate scroll-wheel events into arrow keys when
+    /// the running app hasn't enabled mouse tracking — that's how
+    /// gnome-terminal, kitty, alacritty, and friends make scroll
+    /// wheel "just work" in vim/nano without requiring `set mouse=a`.
+    #[must_use]
+    pub fn on_alt_screen(&self) -> bool {
+        let mut screen: sys::GhosttyTerminalScreen = sys::GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+        // SAFETY: handle is live; the docs for
+        // GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN specify the output
+        // type as `GhosttyTerminalScreen *`, which matches.
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.handle,
+                sys::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+                (&raw mut screen).cast::<std::ffi::c_void>(),
+            );
+        }
+        screen == sys::GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+    }
 }
 
 /// Position + visibility of a terminal's cursor.
