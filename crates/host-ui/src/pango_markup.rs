@@ -130,16 +130,13 @@ pub fn splice_cursor(
         }
 
         if ch == '<' {
-            // We hit a tag while potentially at the target position.
-            // If (row, col) matches, emit the cursor as a trailing
-            // space BEFORE the tag so the following text renders
-            // with its intended style.
-            if !spliced && row == target_row && col == target_col {
-                out.push_str(cursor_open);
-                out.push(' ');
-                out.push_str(CURSOR_CLOSE);
-                spliced = true;
-            }
+            // Tags don't advance the column counter, so if the cursor
+            // is supposed to land here we want to splice it onto the
+            // *next* rendered character — not eagerly emit a space
+            // placeholder. Eagerly splicing a space would shift every
+            // following character right by one cell, which is
+            // exactly what made vim's content jiggle as the cursor
+            // blinked across span boundaries.
             in_tag = true;
             out.push(ch);
             continue;
