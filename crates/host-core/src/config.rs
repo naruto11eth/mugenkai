@@ -395,6 +395,15 @@ fn normalize_key(key: &str) -> String {
         "down" => "Down".into(),
         "left" => "Left".into(),
         "right" => "Right".into(),
+        "comma" => "comma".into(),
+        "period" => "period".into(),
+        "semicolon" => "semicolon".into(),
+        "apostrophe" => "apostrophe".into(),
+        "slash" => "slash".into(),
+        "backslash" => "backslash".into(),
+        "minus" => "minus".into(),
+        "equal" => "equal".into(),
+        "grave" => "grave".into(),
         other => other.to_string(),
     }
 }
