@@ -186,6 +186,110 @@ impl MugenkaiConfig {
         )
     }
 
+    /// Serialize the config back into the same `key = value`
+    /// DSL format that [`parse_str`](Self::parse_str) reads.
+    ///
+    /// Used by the in-terminal Settings tab to persist user
+    /// edits. The output is stable — re-parsing the result
+    /// yields a config equal to the original.
+    #[must_use]
+    pub fn to_dsl_string(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut out = String::with_capacity(1024);
+        out.push_str("# mugenkai configuration\n");
+        out.push_str("# Written by the in-terminal Settings tab.\n");
+        out.push_str("# See `mugenkai --help` (coming) or docs/configuration.md.\n");
+        out.push('\n');
+
+        out.push_str("# ─── keybindings ─────────────────────────────────────────\n");
+        let kb = &self.keybindings;
+        for (key, value) in [
+            ("mugenkai-keybinding-quit", &kb.quit),
+            ("mugenkai-keybinding-split-horizontal", &kb.split_horizontal),
+            ("mugenkai-keybinding-split-vertical", &kb.split_vertical),
+            ("mugenkai-keybinding-close-pane", &kb.close_pane),
+            ("mugenkai-keybinding-focus-next", &kb.focus_next),
+            ("mugenkai-keybinding-focus-prev", &kb.focus_prev),
+            ("mugenkai-keybinding-new-tab", &kb.new_tab),
+            ("mugenkai-keybinding-close-tab", &kb.close_tab),
+            ("mugenkai-keybinding-next-tab", &kb.next_tab),
+            ("mugenkai-keybinding-prev-tab", &kb.prev_tab),
+            ("mugenkai-keybinding-open-settings", &kb.open_settings),
+        ] {
+            let _ = writeln!(out, "{key:<48} = {value}");
+        }
+        out.push('\n');
+
+        out.push_str("# ─── cursor ──────────────────────────────────────────────\n");
+        let cursor_style = match self.cursor.style {
+            CursorStyle::Block => "block",
+            CursorStyle::Underline => "underline",
+        };
+        let _ = writeln!(out, "{:<48} = {}", "mugenkai-cursor-style", cursor_style);
+        let _ = writeln!(
+            out,
+            "{:<48} = {}",
+            "mugenkai-cursor-blink", self.cursor.blink
+        );
+        let _ = writeln!(
+            out,
+            "{:<48} = {}",
+            "mugenkai-cursor-blink-interval-ms", self.cursor.blink_interval_ms
+        );
+        let _ = writeln!(
+            out,
+            "{:<48} = {}",
+            "mugenkai-cursor-color", self.cursor.color
+        );
+        let _ = writeln!(
+            out,
+            "{:<48} = {}",
+            "mugenkai-cursor-text-color", self.cursor.text_color
+        );
+        out.push('\n');
+
+        out.push_str("# ─── panes ───────────────────────────────────────────────\n");
+        let _ = writeln!(
+            out,
+            "{:<48} = {}",
+            "mugenkai-pane-focus-ring", self.pane.focus_ring
+        );
+        let _ = writeln!(
+            out,
+            "{:<48} = {}",
+            "mugenkai-pane-focus-ring-color", self.pane.focus_ring_color
+        );
+        let _ = writeln!(
+            out,
+            "{:<48} = {}",
+            "mugenkai-pane-split-ratio", self.pane.split_ratio
+        );
+
+        out
+    }
+
+    /// Write the config to its default XDG path, creating
+    /// parent directories as needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `std::io::Error` if the parent directory can't
+    /// be created or the write fails.
+    pub fn write_to_default_path(&self) -> std::io::Result<PathBuf> {
+        let path = Self::default_path().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no HOME or XDG_CONFIG_HOME set; cannot locate config path",
+            )
+        })?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, self.to_dsl_string())?;
+        Ok(path)
+    }
+
     /// Load config from an explicit path. Non-existent files
     /// resolve to defaults; read/parse errors log a warning to
     /// stderr and fall back to defaults.
