@@ -9,6 +9,7 @@
 //! land in Phase 2 (Units 4, 4b, 5) + Phase 3 (Unit 8).
 
 mod app;
+mod css;
 mod pane_widget;
 mod pango_markup;
 mod split_container;

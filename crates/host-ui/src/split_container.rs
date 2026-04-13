@@ -154,6 +154,28 @@ impl SplitContainer {
             .map(PaneWidget::input_sender)
     }
 
+    /// Apply the `.mugenkai-pane-focused` CSS class to the focused
+    /// pane and `.mugenkai-pane-unfocused` to every other one.
+    /// Called from [`rematerialize`](Self::rematerialize) after
+    /// the widget tree is rebuilt.
+    fn apply_focus_styling(&self) {
+        if !self.config.pane.focus_ring {
+            return;
+        }
+        let focused = self.tree.borrow().focused();
+        let panes = self.panes.borrow();
+        for (&id, pane) in panes.iter() {
+            let widget = pane.widget();
+            if id == focused {
+                widget.remove_css_class("mugenkai-pane-unfocused");
+                widget.add_css_class("mugenkai-pane-focused");
+            } else {
+                widget.remove_css_class("mugenkai-pane-focused");
+                widget.add_css_class("mugenkai-pane-unfocused");
+            }
+        }
+    }
+
     /// Tear down and rebuild the GTK widget tree from the current
     /// model. Leaves are moved between container slots; the
     /// underlying `PaneWidget` instances (and their worker threads)
@@ -187,12 +209,33 @@ impl SplitContainer {
         }
 
         // Build a fresh widget tree from the current Node.
-        let tree = self.tree.borrow();
-        let panes = self.panes.borrow();
-        let new_widget = build_widget(tree.root(), &panes);
-        new_widget.set_hexpand(true);
-        new_widget.set_vexpand(true);
-        self.root.append(&new_widget);
+        {
+            let tree = self.tree.borrow();
+            let panes = self.panes.borrow();
+            let new_widget = build_widget(tree.root(), &panes);
+            new_widget.set_hexpand(true);
+            new_widget.set_vexpand(true);
+            self.root.append(&new_widget);
+        }
+
+        // After the tree is visually up to date, re-apply focus
+        // CSS classes so the highlighted pane matches the
+        // current focus id.
+        self.apply_focus_styling();
+    }
+
+    /// Cycle focus to the next pane in layout order, then reapply
+    /// focus styling so the ring follows.
+    pub fn focus_next_styled(&self) {
+        self.focus_next();
+        self.apply_focus_styling();
+    }
+
+    /// Cycle focus to the previous pane in layout order, then
+    /// reapply focus styling.
+    pub fn focus_prev_styled(&self) {
+        self.focus_prev();
+        self.apply_focus_styling();
     }
 }
 
