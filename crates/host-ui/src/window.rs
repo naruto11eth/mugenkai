@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use adw::prelude::*;
 use gtk4::{gio, glib};
@@ -10,7 +11,7 @@ use host_core::{MugenkaiConfig, to_gtk_accelerator};
 use crate::css;
 use crate::pane_widget::install_pane_key_controller_dynamic;
 use crate::settings_view::SettingsView;
-use crate::split_container::SplitContainer;
+use crate::split_container::{ReapOutcome, SplitContainer};
 
 /// Which kind of content lives in a given tab.
 ///
@@ -38,8 +39,8 @@ enum TabKind {
 ///                 └── leaves are PaneWidgets running shell PTYs
 /// ```
 ///
-/// The window owns an `Rc<RefCell<Vec<TabKind>>>`
-/// that tracks split tabs in lockstep with the
+/// The window owns an `Rc<RefCell<Vec<Rc<SplitContainer>>>>`
+/// that tracks split containers in lockstep with the
 /// `AdwTabView`'s pages. Cycling / closing tabs manipulates
 /// this vector plus the tab view together; the keyboard
 /// controller queries the currently active container every
@@ -109,6 +110,8 @@ impl MugenkaiWindow {
         toast_overlay.set_child(Some(&toolbar_view));
 
         window.set_content(Some(&toast_overlay));
+
+        install_exit_reaper(&window, &tab_view, &tabs);
 
         Self::install_shortcuts(&window, app, &tab_view, &tabs, config);
 
@@ -424,8 +427,8 @@ fn install_cycle_tab_action(
 }
 
 /// Close the currently active tab. Removes the matching entry
-/// from the container vector and closes the window if the last
-/// tab was just removed.
+/// from the tabs vector and closes the window if the last tab
+/// was just removed.
 fn close_active_tab(
     tab_view: &adw::TabView,
     tabs: &Rc<RefCell<Vec<TabKind>>>,
@@ -438,10 +441,6 @@ fn close_active_tab(
         return;
     };
 
-    // Drop the container BEFORE the tab view closes the page.
-    // close_page() asynchronously notifies close handlers and
-    // then removes the page; for v0.1 we use the synchronous
-    // close_page_finish path via close_page + confirm.
     tab_view.close_page(&page);
     tab_view.close_page_finish(&page, true);
 
@@ -477,6 +476,75 @@ fn cycle_tab(tab_view: &adw::TabView, forward: bool) {
     };
     let next = tab_view.nth_page(next_idx);
     tab_view.set_selected_page(&next);
+}
+
+/// Install a 200ms timer on the GTK main loop that polls every
+/// terminal tab for panes whose shell has exited.
+///
+/// Dead panes are removed from their [`SplitContainer`] via
+/// [`SplitContainer::reap_exited`]. If a container reports
+/// [`ReapOutcome::AllPanesExited`], the tab is closed outright;
+/// if that was the last tab, the window closes.
+///
+/// This is what makes `exit` and Ctrl+D in a pane actually
+/// collapse the split: the worker thread's pty read returns EOF,
+/// the 30ms drain tick flips `state.exited`, and this reaper
+/// picks it up on the next poll.
+fn install_exit_reaper(
+    window: &adw::ApplicationWindow,
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+) {
+    let window = window.clone();
+    let tab_view = tab_view.clone();
+    let tabs = Rc::clone(tabs);
+    glib::timeout_add_local(Duration::from_millis(200), move || {
+        // Walk every terminal tab once. Collect the indices of
+        // tabs that need closing so we don't mutate `tabs` while
+        // iterating. Settings tabs have no panes to reap.
+        let mut dead_tab_indices: Vec<usize> = Vec::new();
+        {
+            let list = tabs.borrow();
+            for (idx, kind) in list.iter().enumerate() {
+                if let TabKind::Terminal(container) = kind
+                    && container.reap_exited() == ReapOutcome::AllPanesExited
+                {
+                    dead_tab_indices.push(idx);
+                }
+            }
+        }
+
+        // Close dead tabs back-to-front so earlier indices stay
+        // valid. `close_tab_at` pulls the entry out of the
+        // tabs vec and removes the corresponding tab view page.
+        for idx in dead_tab_indices.iter().rev() {
+            close_tab_at(&tab_view, &tabs, *idx);
+        }
+
+        if tabs.borrow().is_empty() {
+            window.close();
+            return glib::ControlFlow::Break;
+        }
+
+        glib::ControlFlow::Continue
+    });
+}
+
+/// Remove the tab at `idx` from both the tab view and the tabs
+/// vec. Used by the exit reaper for non-selected tabs (the
+/// user-triggered path goes through `close_active_tab`).
+fn close_tab_at(tab_view: &adw::TabView, tabs: &Rc<RefCell<Vec<TabKind>>>, idx: usize) {
+    let Ok(i32_idx) = i32::try_from(idx) else {
+        return;
+    };
+    let page = tab_view.nth_page(i32_idx);
+    tab_view.close_page(&page);
+    tab_view.close_page_finish(&page, true);
+
+    let mut list = tabs.borrow_mut();
+    if idx < list.len() {
+        list.remove(idx);
+    }
 }
 
 /// Translate a config-level accelerator string (`ctrl+shift+d`)
