@@ -12,6 +12,7 @@ mod app;
 mod css;
 mod pane_widget;
 mod pango_markup;
+mod settings_view;
 mod split_container;
 mod window;
 
