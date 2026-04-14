@@ -59,6 +59,7 @@ struct SettingsRows {
     copy: adw::EntryRow,
     paste: adw::EntryRow,
     open_chat: adw::EntryRow,
+    explain_in_chat: adw::EntryRow,
 
     // ─── cursor ──────────────────────────────────────────────
     cursor_style: adw::ComboRow,
@@ -105,6 +106,7 @@ impl SettingsView {
         let copy = entry_row("Copy", &config.keybindings.copy);
         let paste = entry_row("Paste", &config.keybindings.paste);
         let open_chat = entry_row("Open chat", &config.keybindings.open_chat);
+        let explain_in_chat = entry_row("Explain in chat", &config.keybindings.explain_in_chat);
 
         for row in [
             &quit,
@@ -121,6 +123,7 @@ impl SettingsView {
             &copy,
             &paste,
             &open_chat,
+            &explain_in_chat,
         ] {
             kb_group.add(row);
         }
@@ -255,6 +258,7 @@ impl SettingsView {
             copy,
             paste,
             open_chat,
+            explain_in_chat,
             cursor_style,
             cursor_blink,
             cursor_blink_interval,
@@ -321,6 +325,7 @@ impl SettingsView {
             copy: rows.copy.text().to_string(),
             paste: rows.paste.text().to_string(),
             open_chat: rows.open_chat.text().to_string(),
+            explain_in_chat: rows.explain_in_chat.text().to_string(),
         };
 
         cfg.cursor.style = match rows.cursor_style.selected() {
@@ -391,6 +396,8 @@ impl SettingsView {
         rows.copy.set_text(&defaults.keybindings.copy);
         rows.paste.set_text(&defaults.keybindings.paste);
         rows.open_chat.set_text(&defaults.keybindings.open_chat);
+        rows.explain_in_chat
+            .set_text(&defaults.keybindings.explain_in_chat);
 
         rows.cursor_style.set_selected(match defaults.cursor.style {
             CursorStyle::Block => 0,

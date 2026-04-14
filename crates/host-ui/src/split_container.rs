@@ -239,6 +239,18 @@ impl SplitContainer {
         }
     }
 
+    /// Return the focused pane's visible terminal text as a plain
+    /// string. Used by the "Explain this in chat" action to ship
+    /// the current terminal contents to Claude.
+    #[must_use]
+    pub fn focused_visible_text(&self) -> Option<String> {
+        let focused = self.tree.borrow().focused();
+        self.panes
+            .borrow()
+            .get(&focused)
+            .map(PaneWidget::visible_screen_text)
+    }
+
     /// Tell every pane whether it is the tree-focused one and
     /// apply matching CSS classes.
     ///
