@@ -129,6 +129,10 @@ impl Drop for PaneState {
 pub struct PaneWidget {
     widget: gtk4::Box,
     write_tx: PaneInputSender,
+    // Reference to the selectable monospace label that renders
+    // the terminal grid. Used by `copy_selection` to read the
+    // current drag-selection into the system clipboard.
+    screen_label: gtk4::Label,
     // Shared with the 30ms drain_pty_bytes tick closure. Used
     // directly by set_focused to flip tree-focus state.
     state: Rc<RefCell<PaneState>>,
@@ -200,7 +204,11 @@ impl PaneWidget {
             .label("")
             .halign(gtk4::Align::Start)
             .valign(gtk4::Align::Start)
-            .selectable(false)
+            // Selectable so the user can drag-select text to copy.
+            // `refresh_labels` saves + restores selection bounds
+            // across set_markup calls so the selection survives
+            // the 30ms redraw tick.
+            .selectable(true)
             .wrap(false)
             .xalign(0.0)
             .yalign(0.0)
@@ -330,6 +338,7 @@ impl PaneWidget {
         Self {
             widget: vbox,
             write_tx,
+            screen_label,
             state,
             _controller: controller,
             timer_source: Some(timer_source),
@@ -356,6 +365,43 @@ impl PaneWidget {
     #[must_use]
     pub fn has_exited(&self) -> bool {
         self.state.borrow().exited
+    }
+
+    /// Return the user's current drag-selection as plain text, or
+    /// `None` if no selection is active.
+    ///
+    /// Reads from the selectable `gtk4::Label` that renders the
+    /// terminal grid — the selection range tracks pango byte
+    /// offsets, not cell coordinates, so the output is whatever
+    /// contiguous range of glyphs the user highlighted (which
+    /// matches what they expect to copy).
+    #[must_use]
+    pub fn copy_selection(&self) -> Option<String> {
+        let (start, end) = self.screen_label.selection_bounds()?;
+        let text = self.screen_label.text();
+        let chars: Vec<char> = text.chars().collect();
+        #[allow(clippy::cast_sign_loss)]
+        let start_usize = start.max(0) as usize;
+        #[allow(clippy::cast_sign_loss)]
+        let end_usize = end.max(0) as usize;
+        let lo = start_usize.min(chars.len());
+        let hi = end_usize.min(chars.len());
+        if lo >= hi {
+            return None;
+        }
+        Some(chars[lo..hi].iter().collect())
+    }
+
+    /// Write `text` to this pane's PTY input channel as if the
+    /// user had typed it. Used by the paste action to push
+    /// clipboard contents into the shell.
+    ///
+    /// No bracketed-paste-mode wrapping yet — apps that have DEC
+    /// mode 2004 enabled (vim, tmux) will see paste as regular
+    /// typing. A later commit can query the terminal's bracketed
+    /// paste state and wrap in `ESC[200~ … ESC[201~` when on.
+    pub fn paste_text(&self, text: &str) {
+        let _ = self.write_tx.send(text.as_bytes().to_vec());
     }
 
     /// Mark this pane as focused or unfocused from the tree's
@@ -596,6 +642,15 @@ fn drain_pty_bytes(
 }
 
 fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &gtk4::Label) {
+    // Save any active user selection before we rewrite the markup.
+    // `set_markup` replaces the label's text and clears selection;
+    // we restore the same byte offsets afterwards so drag-selection
+    // survives blink/resize ticks. If the terminal content shifts
+    // between frames (e.g. `tail -f`) the offsets may point to
+    // different characters — acceptable for the v1 feel, and the
+    // user can re-drag if needed.
+    let saved_selection = screen_label.selection_bounds();
+
     let status_text = if state.exited {
         format!(
             "shell exited · bells {} · titles {}",
@@ -649,6 +704,14 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
                 .unwrap_or_else(|inner| format!("[format err: {err}; {inner}]"));
             screen_label.set_text(&plain);
         }
+    }
+
+    // Restore the user's selection range. Offsets are character
+    // positions into the label's plain-text view; `select_region`
+    // is lenient about out-of-range values and will clamp to the
+    // available range.
+    if let Some((start, end)) = saved_selection {
+        screen_label.select_region(start, end);
     }
 }
 

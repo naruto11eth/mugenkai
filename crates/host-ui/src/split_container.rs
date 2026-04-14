@@ -221,6 +221,24 @@ impl SplitContainer {
             .map(PaneWidget::input_sender)
     }
 
+    /// Drag-selected plain text in the focused pane, or `None` if
+    /// nothing is selected. Used by the window-level copy action.
+    #[must_use]
+    pub fn copy_focused_selection(&self) -> Option<String> {
+        let focused = self.tree.borrow().focused();
+        self.panes.borrow().get(&focused)?.copy_selection()
+    }
+
+    /// Forward `text` to the focused pane's PTY input channel as
+    /// if the user had typed it. Used by the window-level paste
+    /// action when the user hits Ctrl+Shift+V.
+    pub fn paste_to_focused(&self, text: &str) {
+        let focused = self.tree.borrow().focused();
+        if let Some(pane) = self.panes.borrow().get(&focused) {
+            pane.paste_text(text);
+        }
+    }
+
     /// Tell every pane whether it is the tree-focused one and
     /// apply matching CSS classes.
     ///

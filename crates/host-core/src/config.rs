@@ -72,6 +72,8 @@ pub struct KeyBindings {
     pub next_tab: String,
     pub prev_tab: String,
     pub open_settings: String,
+    pub copy: String,
+    pub paste: String,
 }
 
 impl Default for KeyBindings {
@@ -88,6 +90,8 @@ impl Default for KeyBindings {
             next_tab: "ctrl+page_down".into(),
             prev_tab: "ctrl+page_up".into(),
             open_settings: "ctrl+comma".into(),
+            copy: "ctrl+shift+c".into(),
+            paste: "ctrl+shift+v".into(),
         }
     }
 }
@@ -220,6 +224,8 @@ impl MugenkaiConfig {
             ("mugenkai-keybinding-next-tab", &kb.next_tab),
             ("mugenkai-keybinding-prev-tab", &kb.prev_tab),
             ("mugenkai-keybinding-open-settings", &kb.open_settings),
+            ("mugenkai-keybinding-copy", &kb.copy),
+            ("mugenkai-keybinding-paste", &kb.paste),
         ] {
             let _ = writeln!(out, "{key:<48} = {value}");
         }
@@ -360,6 +366,8 @@ impl MugenkaiConfig {
             "mugenkai-keybinding-next-tab" => self.keybindings.next_tab = value.into(),
             "mugenkai-keybinding-prev-tab" => self.keybindings.prev_tab = value.into(),
             "mugenkai-keybinding-open-settings" => self.keybindings.open_settings = value.into(),
+            "mugenkai-keybinding-copy" => self.keybindings.copy = value.into(),
+            "mugenkai-keybinding-paste" => self.keybindings.paste = value.into(),
 
             // ─── cursor ──────────────────────────────────────
             "mugenkai-cursor-style" => {

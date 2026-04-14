@@ -173,6 +173,8 @@ impl MugenkaiWindow {
         install_cycle_tab_action(window, app, tab_view, "next-tab", &kb.next_tab, true);
         install_cycle_tab_action(window, app, tab_view, "prev-tab", &kb.prev_tab, false);
         install_open_settings_action(window, app, tab_view, tabs, config, &kb.open_settings);
+        install_copy_action(window, app, tab_view, tabs, &kb.copy);
+        install_paste_action(window, app, tab_view, tabs, &kb.paste);
     }
 
     /// Show the window.
@@ -407,6 +409,60 @@ fn install_open_settings_action(
     });
     window.add_action(&action);
     set_accel(app, "win.open-settings", accel_str);
+}
+
+fn install_copy_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+    accel_str: &str,
+) {
+    let action = gio::SimpleAction::new("copy", None);
+    let tab_view = tab_view.clone();
+    let tabs = Rc::clone(tabs);
+    action.connect_activate(move |_, _| {
+        let Some(container) = active_container(&tab_view, &tabs) else {
+            return;
+        };
+        let Some(text) = container.copy_focused_selection() else {
+            return;
+        };
+        if let Some(display) = gtk4::gdk::Display::default() {
+            display.clipboard().set_text(&text);
+        }
+    });
+    window.add_action(&action);
+    set_accel(app, "win.copy", accel_str);
+}
+
+fn install_paste_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+    accel_str: &str,
+) {
+    let action = gio::SimpleAction::new("paste", None);
+    let tab_view = tab_view.clone();
+    let tabs = Rc::clone(tabs);
+    action.connect_activate(move |_, _| {
+        let Some(container) = active_container(&tab_view, &tabs) else {
+            return;
+        };
+        let Some(display) = gtk4::gdk::Display::default() else {
+            return;
+        };
+        let clipboard = display.clipboard();
+        let container_for_cb = container.clone();
+        clipboard.read_text_async(None::<&gio::Cancellable>, move |result| {
+            if let Ok(Some(text)) = result {
+                container_for_cb.paste_to_focused(text.as_str());
+            }
+        });
+    });
+    window.add_action(&action);
+    set_accel(app, "win.paste", accel_str);
 }
 
 fn install_cycle_tab_action(

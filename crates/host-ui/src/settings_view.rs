@@ -56,6 +56,8 @@ struct SettingsRows {
     next_tab: adw::EntryRow,
     prev_tab: adw::EntryRow,
     open_settings: adw::EntryRow,
+    copy: adw::EntryRow,
+    paste: adw::EntryRow,
 
     // ─── cursor ──────────────────────────────────────────────
     cursor_style: adw::ComboRow,
@@ -95,6 +97,8 @@ impl SettingsView {
         let next_tab = entry_row("Next tab", &config.keybindings.next_tab);
         let prev_tab = entry_row("Previous tab", &config.keybindings.prev_tab);
         let open_settings = entry_row("Open settings", &config.keybindings.open_settings);
+        let copy = entry_row("Copy", &config.keybindings.copy);
+        let paste = entry_row("Paste", &config.keybindings.paste);
 
         for row in [
             &quit,
@@ -108,6 +112,8 @@ impl SettingsView {
             &next_tab,
             &prev_tab,
             &open_settings,
+            &copy,
+            &paste,
         ] {
             kb_group.add(row);
         }
@@ -226,6 +232,8 @@ impl SettingsView {
             next_tab,
             prev_tab,
             open_settings,
+            copy,
+            paste,
             cursor_style,
             cursor_blink,
             cursor_blink_interval,
@@ -287,6 +295,8 @@ impl SettingsView {
             next_tab: rows.next_tab.text().to_string(),
             prev_tab: rows.prev_tab.text().to_string(),
             open_settings: rows.open_settings.text().to_string(),
+            copy: rows.copy.text().to_string(),
+            paste: rows.paste.text().to_string(),
         };
 
         cfg.cursor.style = match rows.cursor_style.selected() {
@@ -348,6 +358,8 @@ impl SettingsView {
         rows.prev_tab.set_text(&defaults.keybindings.prev_tab);
         rows.open_settings
             .set_text(&defaults.keybindings.open_settings);
+        rows.copy.set_text(&defaults.keybindings.copy);
+        rows.paste.set_text(&defaults.keybindings.paste);
 
         rows.cursor_style.set_selected(match defaults.cursor.style {
             CursorStyle::Block => 0,
