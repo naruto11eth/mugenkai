@@ -169,6 +169,7 @@ impl MugenkaiWindow {
         install_close_tab_action(window, app, tab_view, tabs, &kb.close_tab);
         install_cycle_tab_action(window, app, tab_view, "next-tab", &kb.next_tab, true);
         install_cycle_tab_action(window, app, tab_view, "prev-tab", &kb.prev_tab, false);
+        install_open_settings_action(window, app, tab_view, tabs, config, &kb.open_settings);
     }
 
     /// Show the window.
@@ -195,6 +196,37 @@ fn new_terminal_tab(
     page.set_title(title);
 
     tabs.borrow_mut().push(TabKind::Terminal(container));
+    tab_view.set_selected_page(&page);
+}
+
+/// Append a new Settings tab with the current config loaded
+/// into the form rows.
+fn new_settings_tab(
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+    config: &MugenkaiConfig,
+) {
+    // If a Settings tab already exists, activate it instead of
+    // spawning a second one.
+    {
+        let list = tabs.borrow();
+        for (idx, kind) in list.iter().enumerate() {
+            if matches!(kind, TabKind::Settings(_))
+                && let Ok(i32_idx) = i32::try_from(idx)
+            {
+                let page = tab_view.nth_page(i32_idx);
+                tab_view.set_selected_page(&page);
+                return;
+            }
+        }
+    }
+
+    let view = SettingsView::new(config);
+    let page = tab_view.append(view.widget());
+    page.set_title("Settings");
+    page.set_icon(Some(&gtk4::gio::ThemedIcon::new("emblem-system-symbolic")));
+
+    tabs.borrow_mut().push(TabKind::Settings(view));
     tab_view.set_selected_page(&page);
 }
 
@@ -353,6 +385,25 @@ fn install_close_tab_action(
     ));
     window.add_action(&action);
     set_accel(app, "win.close-tab", accel_str);
+}
+
+fn install_open_settings_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+    config: &Rc<MugenkaiConfig>,
+    accel_str: &str,
+) {
+    let action = gio::SimpleAction::new("open-settings", None);
+    let tab_view = tab_view.clone();
+    let tabs = Rc::clone(tabs);
+    let config = Rc::clone(config);
+    action.connect_activate(move |_, _| {
+        new_settings_tab(&tab_view, &tabs, &config);
+    });
+    window.add_action(&action);
+    set_accel(app, "win.open-settings", accel_str);
 }
 
 fn install_cycle_tab_action(
