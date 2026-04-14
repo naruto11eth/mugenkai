@@ -24,9 +24,28 @@ use std::rc::Rc;
 use adw::prelude::*;
 
 use host_core::MugenkaiConfig;
-use host_core::pane_tree::{Node, Orientation, PaneId, PaneTree, SplitDirection};
+use host_core::pane_tree::{CloseResult, Node, Orientation, PaneId, PaneTree, SplitDirection};
 
 use crate::pane_widget::{PaneInputSender, PaneWidget};
+
+/// Result of a single [`SplitContainer::reap_exited`] sweep.
+///
+/// The window-level reaper timer uses this to decide whether to
+/// also close the enclosing tab (when every live pane in the
+/// container has died).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReapOutcome {
+    /// No panes in this container have exited; nothing to do.
+    Nothing,
+    /// At least one dead pane was removed, but the container still
+    /// has at least one live pane.
+    Reaped,
+    /// Every pane in this container has exited. The caller should
+    /// close the tab that owns this container — `SplitContainer`
+    /// can't remove its own last leaf without leaving the tree in
+    /// an invalid state.
+    AllPanesExited,
+}
 
 /// A GTK widget hosting a live [`PaneTree`].
 ///
@@ -118,7 +137,6 @@ impl SplitContainer {
     /// `false` if we hit the last-pane sentinel (caller should close
     /// the tab).
     pub fn close_focused(&self) -> bool {
-        use host_core::pane_tree::CloseResult;
         let closed_id = self.tree.borrow().focused();
         let result = self.tree.borrow_mut().close_focused();
         match result {
@@ -128,6 +146,55 @@ impl SplitContainer {
                 self.rematerialize();
                 true
             }
+        }
+    }
+
+    /// Remove any panes whose shell process has exited.
+    ///
+    /// Called periodically by the window-level reaper timer. Walks
+    /// every pane in the container, checks [`PaneWidget::has_exited`]
+    /// on each, and closes the dead ones via [`PaneTree::close`].
+    /// The tree preserves the previous focus unless it was on a
+    /// closed pane, in which case focus jumps to the first
+    /// remaining leaf.
+    ///
+    /// Returns [`ReapOutcome::AllPanesExited`] when every live pane
+    /// in the container is dead — the caller must then close the
+    /// enclosing tab because a pane tree must always contain at
+    /// least one leaf.
+    pub fn reap_exited(&self) -> ReapOutcome {
+        let dead_ids: Vec<PaneId> = {
+            let panes = self.panes.borrow();
+            panes
+                .iter()
+                .filter_map(|(id, pane)| pane.has_exited().then_some(*id))
+                .collect()
+        };
+
+        if dead_ids.is_empty() {
+            return ReapOutcome::Nothing;
+        }
+
+        // If every live pane has exited, bail out early — we can't
+        // remove the last leaf of the tree. Signal the window so
+        // it closes the whole tab.
+        if dead_ids.len() == self.panes.borrow().len() {
+            return ReapOutcome::AllPanesExited;
+        }
+
+        let mut reaped_any = false;
+        for id in dead_ids {
+            if let Ok(CloseResult::Removed { .. }) = self.tree.borrow_mut().close(id) {
+                self.panes.borrow_mut().remove(&id);
+                reaped_any = true;
+            }
+        }
+
+        if reaped_any {
+            self.rematerialize();
+            ReapOutcome::Reaped
+        } else {
+            ReapOutcome::Nothing
         }
     }
 
