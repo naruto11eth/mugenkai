@@ -166,6 +166,58 @@ impl DaemonClient {
     }
 }
 
+/// One-shot connect + call + disconnect against the running
+/// daemon. Used from background threads that need to make a
+/// daemon call without sharing the main-thread [`DaemonClient`].
+///
+/// The chat pane uses this from a worker `std::thread` so the
+/// Anthropic roundtrip (multi-second) doesn't freeze the GTK
+/// main loop. Each call opens a fresh unix socket, writes one
+/// request, reads one response, and closes — the daemon handles
+/// concurrent connections via `node:net`.
+///
+/// # Errors
+///
+/// - `io::ErrorKind::NotFound` if the daemon socket doesn't exist
+///   (i.e. the daemon never started or already exited)
+/// - Any other I/O error from the socket operations
+/// - `io::Error` of kind `Other` if the daemon returned a
+///   JSON-RPC error envelope
+pub fn call_one_shot(
+    method: &str,
+    params: &serde_json::Value,
+) -> io::Result<serde_json::Value> {
+    let path = daemon_socket_path();
+    let stream = UnixStream::connect(&path)?;
+    let mut writer = stream.try_clone()?;
+    let mut reader = BufReader::new(stream);
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params.clone(),
+    });
+    let mut line = serde_json::to_string(&request)
+        .map_err(|err| io::Error::other(format!("encode request: {err}")))?;
+    line.push('\n');
+    writer.write_all(line.as_bytes())?;
+    writer.flush()?;
+
+    let mut response_line = String::new();
+    reader.read_line(&mut response_line)?;
+    let response: serde_json::Value = serde_json::from_str(response_line.trim_end())
+        .map_err(|err| io::Error::other(format!("parse response: {err}")))?;
+
+    if let Some(error) = response.get("error") {
+        return Err(io::Error::other(format!("daemon error: {error}")));
+    }
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| io::Error::other("daemon response missing result"))
+}
+
 /// Resolve the Unix socket path the daemon listens on — matches
 /// the TypeScript-side `defaultSocketPath()` in
 /// `daemon/protocol/src/index.ts`.

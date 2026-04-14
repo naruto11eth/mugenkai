@@ -8,6 +8,7 @@ use gtk4::{gio, glib};
 use host_core::pane_tree::SplitDirection;
 use host_core::{MugenkaiConfig, to_gtk_accelerator};
 
+use crate::chat_view::ChatView;
 use crate::css;
 use crate::pane_widget::install_pane_key_controller_dynamic;
 use crate::settings_view::SettingsView;
@@ -15,14 +16,16 @@ use crate::split_container::{ReapOutcome, SplitContainer};
 
 /// Which kind of content lives in a given tab.
 ///
-/// Terminal tabs own a [`SplitContainer`]; the Settings tab
-/// owns a [`SettingsView`]. Keybinding handlers that only make
-/// sense for terminal tabs (split, close-pane, focus-next)
-/// short-circuit when the active tab is a Settings tab.
+/// Terminal tabs own a [`SplitContainer`]; the Settings tab owns
+/// a [`SettingsView`]; the Chat tab owns a [`ChatView`] that
+/// talks to Claude via the sidecar daemon. Keybinding handlers
+/// that only make sense for terminal tabs (split, close-pane,
+/// focus-next) short-circuit for the other kinds.
 #[derive(Clone)]
 enum TabKind {
     Terminal(Rc<SplitContainer>),
     Settings(#[allow(dead_code)] Rc<SettingsView>),
+    Chat(#[allow(dead_code)] Rc<ChatView>),
 }
 
 /// The top-level application window.
@@ -175,6 +178,7 @@ impl MugenkaiWindow {
         install_open_settings_action(window, app, tab_view, tabs, config, &kb.open_settings);
         install_copy_action(window, app, tab_view, tabs, &kb.copy);
         install_paste_action(window, app, tab_view, tabs, &kb.paste);
+        install_open_chat_action(window, app, tab_view, tabs, &kb.open_chat);
     }
 
     /// Show the window.
@@ -201,6 +205,34 @@ fn new_terminal_tab(
     page.set_title(title);
 
     tabs.borrow_mut().push(TabKind::Terminal(container));
+    tab_view.set_selected_page(&page);
+}
+
+/// Append a new Chat tab backed by a [`ChatView`] that talks to
+/// the sidecar daemon. Reuses an existing chat tab if one is
+/// already open (same pattern as Settings).
+fn new_chat_tab(tab_view: &adw::TabView, tabs: &Rc<RefCell<Vec<TabKind>>>) {
+    {
+        let list = tabs.borrow();
+        for (idx, kind) in list.iter().enumerate() {
+            if matches!(kind, TabKind::Chat(_))
+                && let Ok(i32_idx) = i32::try_from(idx)
+            {
+                let page = tab_view.nth_page(i32_idx);
+                tab_view.set_selected_page(&page);
+                return;
+            }
+        }
+    }
+
+    let view = ChatView::new();
+    let page = tab_view.append(view.widget());
+    page.set_title("Chat");
+    page.set_icon(Some(&gtk4::gio::ThemedIcon::new(
+        "user-available-symbolic",
+    )));
+
+    tabs.borrow_mut().push(TabKind::Chat(view));
     tab_view.set_selected_page(&page);
 }
 
@@ -256,7 +288,7 @@ fn active_container(
     let idx = selected_index(tab_view)?;
     match tabs.borrow().get(idx)? {
         TabKind::Terminal(container) => Some(Rc::clone(container)),
-        TabKind::Settings(_) => None,
+        TabKind::Settings(_) | TabKind::Chat(_) => None,
     }
 }
 
@@ -409,6 +441,23 @@ fn install_open_settings_action(
     });
     window.add_action(&action);
     set_accel(app, "win.open-settings", accel_str);
+}
+
+fn install_open_chat_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+    accel_str: &str,
+) {
+    let action = gio::SimpleAction::new("open-chat", None);
+    let tab_view = tab_view.clone();
+    let tabs = Rc::clone(tabs);
+    action.connect_activate(move |_, _| {
+        new_chat_tab(&tab_view, &tabs);
+    });
+    window.add_action(&action);
+    set_accel(app, "win.open-chat", accel_str);
 }
 
 fn install_copy_action(

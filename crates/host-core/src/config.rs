@@ -100,6 +100,7 @@ pub struct KeyBindings {
     pub open_settings: String,
     pub copy: String,
     pub paste: String,
+    pub open_chat: String,
 }
 
 impl Default for KeyBindings {
@@ -118,6 +119,7 @@ impl Default for KeyBindings {
             open_settings: "ctrl+comma".into(),
             copy: "ctrl+shift+c".into(),
             paste: "ctrl+shift+v".into(),
+            open_chat: "ctrl+shift+a".into(),
         }
     }
 }
@@ -252,6 +254,7 @@ impl MugenkaiConfig {
             ("mugenkai-keybinding-open-settings", &kb.open_settings),
             ("mugenkai-keybinding-copy", &kb.copy),
             ("mugenkai-keybinding-paste", &kb.paste),
+            ("mugenkai-keybinding-open-chat", &kb.open_chat),
         ] {
             let _ = writeln!(out, "{key:<48} = {value}");
         }
@@ -403,6 +406,7 @@ impl MugenkaiConfig {
             "mugenkai-keybinding-open-settings" => self.keybindings.open_settings = value.into(),
             "mugenkai-keybinding-copy" => self.keybindings.copy = value.into(),
             "mugenkai-keybinding-paste" => self.keybindings.paste = value.into(),
+            "mugenkai-keybinding-open-chat" => self.keybindings.open_chat = value.into(),
 
             // ─── cursor ──────────────────────────────────────
             "mugenkai-cursor-style" => {

@@ -9,6 +9,7 @@
 //! land in Phase 2 (Units 4, 4b, 5) + Phase 3 (Unit 8).
 
 mod app;
+mod chat_view;
 mod css;
 mod daemon_client;
 mod pane_widget;
