@@ -231,14 +231,19 @@ fn new_chat_tab(tab_view: &adw::TabView, tabs: &Rc<RefCell<Vec<TabKind>>>) -> Rc
     // Wire the "Run ↗" button on chat code blocks: sending text
     // routes to whatever terminal tab is currently focused, or
     // the first terminal tab if the chat tab itself is active.
+    // Returns false when no terminal tab exists at all — the
+    // chat pane then shows a toast prompting the user to open
+    // one rather than silently swallowing the click.
     let tabs_for_send = Rc::clone(tabs);
     let tab_view_for_send = tab_view.clone();
     view.set_send_to_terminal(move |text: &str| {
-        let target = active_container(&tab_view_for_send, &tabs_for_send)
-            .or_else(|| first_terminal_container(&tabs_for_send));
-        if let Some(container) = target {
-            container.paste_to_focused(text);
-        }
+        let Some(container) = active_container(&tab_view_for_send, &tabs_for_send)
+            .or_else(|| first_terminal_container(&tabs_for_send))
+        else {
+            return false;
+        };
+        container.paste_to_focused(text);
+        true
     });
 
     let page = tab_view.append(view.widget());

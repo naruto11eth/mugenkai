@@ -59,7 +59,12 @@ impl Role {
 /// pane invokes this when the user clicks a "Run ↗" button on a
 /// code block so the block's contents flow back into whatever
 /// terminal tab is currently focused.
-pub type SendToTerminal = Box<dyn Fn(&str) + 'static>;
+///
+/// Returns `true` if the text was actually delivered to a
+/// terminal, `false` if no terminal tab was available — the chat
+/// pane uses the failure signal to surface a toast instead of
+/// silently no-opping.
+pub type SendToTerminal = Box<dyn Fn(&str) -> bool + 'static>;
 
 /// The chat pane widget.
 ///
@@ -73,6 +78,11 @@ pub struct ChatView {
     input_entry: gtk4::Entry,
     send_button: gtk4::Button,
     scroller: gtk4::ScrolledWindow,
+    // Wraps the inner box so the Run↗ button can surface a
+    // transient "no terminal open" toast when there's nothing
+    // to paste to, without injecting a fake system message into
+    // the chat history.
+    toast_overlay: adw::ToastOverlay,
     history: RefCell<Vec<ChatMessage>>,
     pending: Cell<bool>,
     // Set by `window.rs` when the chat tab is installed. When
@@ -125,13 +135,23 @@ impl ChatView {
         input_row.append(&input_entry);
         input_row.append(&send_button);
 
+        let inner = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Vertical)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        inner.append(&scroller);
+        inner.append(&input_row);
+
+        let toast_overlay = adw::ToastOverlay::new();
+        toast_overlay.set_child(Some(&inner));
+
         let root = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
             .hexpand(true)
             .vexpand(true)
             .build();
-        root.append(&scroller);
-        root.append(&input_row);
+        root.append(&toast_overlay);
 
         let view = Rc::new(Self {
             root,
@@ -139,6 +159,7 @@ impl ChatView {
             input_entry,
             send_button,
             scroller,
+            toast_overlay,
             history: RefCell::new(Vec::new()),
             pending: Cell::new(false),
             send_to_terminal: RefCell::new(None),
@@ -173,7 +194,7 @@ impl ChatView {
     /// Install the "send to focused terminal" callback. `window.rs`
     /// wires this when it creates the chat tab so the callback
     /// can reach the tabs vector.
-    pub fn set_send_to_terminal(&self, handler: impl Fn(&str) + 'static) {
+    pub fn set_send_to_terminal(&self, handler: impl Fn(&str) -> bool + 'static) {
         *self.send_to_terminal.borrow_mut() = Some(Box::new(handler));
     }
 
@@ -200,11 +221,23 @@ impl ChatView {
         self.send_prompt(&prompt);
     }
 
+    /// Show a transient toast inside the chat tab. Used when the
+    /// Run↗ handler has nothing to paste to, or when the clipboard
+    /// write succeeds so the user gets visual confirmation.
+    fn toast(&self, message: &str) {
+        let toast = adw::Toast::builder().title(message).timeout(3).build();
+        self.toast_overlay.add_toast(toast);
+    }
+
     fn install_welcome(self: &Rc<Self>) {
         let row = self.build_message_row(
             Role::Assistant,
-            "Hi — this is Claude running as a mugenkai sidecar. Ask me about a command, \
-             a stack trace, or anything the shell is showing you.",
+            "Hi — this is Claude running as a mugenkai sidecar.\n\n\
+             • Ask me anything right here.\n\
+             • Or hit Ctrl+Shift+E in any terminal pane to ship its visible output \
+             over and have me explain what's going on.\n\
+             • I'll wrap suggested commands in ``` code blocks — tap Run ↗ on one \
+             to send it straight into your focused shell.",
         );
         self.message_list.append(&row);
     }
@@ -348,10 +381,15 @@ impl ChatView {
     }
 
     /// Build the code-block sub-widget: a monospace label holding
-    /// the block contents plus a "Run ↗" button that dispatches
-    /// to the installed `send_to_terminal` callback. If no
-    /// terminal callback is registered (e.g. during a test build
-    /// with no live tabs vec) the button no-ops.
+    /// the block contents plus two action buttons — **Copy** to
+    /// stash the block on the system clipboard, and **Run ↗** to
+    /// paste it straight into the focused terminal pane via the
+    /// registered `send_to_terminal` callback.
+    ///
+    /// If no terminal callback is wired (e.g. the user closed all
+    /// terminal tabs and only the chat tab remains), Run↗ surfaces
+    /// a toast instead of silently no-opping so the user knows why
+    /// nothing happened.
     fn code_block_widget(self: &Rc<Self>, code: &str) -> gtk4::Box {
         let code_label = gtk4::Label::builder()
             .label(code)
@@ -366,33 +404,67 @@ impl ChatView {
             .margin_end(4)
             .build();
 
+        let copy_button = gtk4::Button::builder()
+            .label("Copy")
+            .css_classes(["pill"])
+            .build();
         let run_button = gtk4::Button::builder()
             .label("Run ↗")
             .css_classes(["suggested-action", "pill"])
-            .halign(gtk4::Align::End)
             .build();
 
-        let view_clone = Rc::clone(self);
-        let code_owned = code.to_string();
-        run_button.connect_clicked(move |_| {
-            if let Some(ref handler) = *view_clone.send_to_terminal.borrow() {
-                // Append a trailing newline so the command
-                // actually executes when it lands in the shell.
+        // Copy: system-clipboard write via the default display,
+        // then a confirmation toast.
+        {
+            let view_clone = Rc::clone(self);
+            let code_owned = code.to_string();
+            copy_button.connect_clicked(move |_| {
+                if let Some(display) = gtk4::gdk::Display::default() {
+                    display.clipboard().set_text(&code_owned);
+                    view_clone.toast("Copied to clipboard");
+                }
+            });
+        }
+
+        // Run: paste-to-focused-terminal via the installed
+        // callback, with a newline appended so the command
+        // actually executes on landing. The callback returns
+        // false when no terminal tab exists — in that case
+        // we surface a toast telling the user how to get one.
+        {
+            let view_clone = Rc::clone(self);
+            let code_owned = code.to_string();
+            run_button.connect_clicked(move |_| {
                 let payload = if code_owned.ends_with('\n') {
                     code_owned.clone()
                 } else {
                     format!("{code_owned}\n")
                 };
-                handler(&payload);
-            }
-        });
+                let delivered = view_clone
+                    .send_to_terminal
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|handler| handler(&payload));
+                if !delivered {
+                    view_clone.toast("No terminal pane — open one with Ctrl+Shift+T");
+                }
+            });
+        }
+
+        let button_row = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk4::Align::End)
+            .build();
+        button_row.append(&copy_button);
+        button_row.append(&run_button);
 
         let box_ = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
             .spacing(4)
             .build();
         box_.append(&code_label);
-        box_.append(&run_button);
+        box_.append(&button_row);
         box_
     }
 
