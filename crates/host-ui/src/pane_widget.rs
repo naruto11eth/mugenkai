@@ -45,7 +45,8 @@ use gtk4::pango;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use host_ghostty::{
-    EffectsHandle, Formatter, MouseEncoder, OutputFormat, Terminal, TerminalEvent,
+    EffectsHandle, Formatter, MouseAction, MouseButton, MouseEncoder, OutputFormat, Terminal,
+    TerminalEvent,
 };
 use host_pty::{Child, SpawnOptions, Winsize};
 
@@ -207,6 +208,14 @@ impl PaneWidget {
         screen_label.add_css_class("monospace");
 
         let scroller = gtk4::ScrolledWindow::builder()
+            // Horizontal policy must stay Automatic. With Never, GTK
+            // requests the child's natural width as the scroller's
+            // natural width, which then propagates up to the window
+            // and makes it grow to fit whatever pango decided the
+            // label needed. The cols-computation below uses pango
+            // units + floor division to guarantee the grid never
+            // exceeds the viewport, so the auto scrollbar stays
+            // hidden in practice.
             .hscrollbar_policy(gtk4::PolicyType::Automatic)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
             .vexpand(true)
@@ -315,6 +324,8 @@ impl PaneWidget {
                 &scroller_tick,
             )
         });
+
+        install_scroll_controller(&vbox, &scroller, &state, &write_tx);
 
         Self {
             widget: vbox,
@@ -641,6 +652,110 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     }
 }
 
+/// Attach a `gtk4::EventControllerScroll` to `vbox` that forwards
+/// scroll-wheel events to the pty when the running application has
+/// activated mouse tracking (vim, htop, less in some modes, tmux),
+/// and otherwise lets the surrounding `ScrolledWindow` handle the
+/// event natively for normal terminal-scrollback navigation.
+///
+/// One discrete wheel notch produces one [`MouseButton::WheelUp`]
+/// or [`MouseButton::WheelDown`] press. Smooth-scroll deltas
+/// accumulate inside `gtk4::EventControllerScroll`'s flag-controlled
+/// behavior — using `Discrete` here means the controller pre-quantises
+/// for us and we always see integer "ticks".
+fn install_scroll_controller(
+    vbox: &gtk4::Box,
+    scroller: &gtk4::ScrolledWindow,
+    state: &Rc<RefCell<PaneState>>,
+    write_tx: &PaneInputSender,
+) {
+    let controller = gtk4::EventControllerScroll::new(
+        gtk4::EventControllerScrollFlags::VERTICAL | gtk4::EventControllerScrollFlags::DISCRETE,
+    );
+    let state_for_scroll = Rc::clone(state);
+    let write_tx_for_scroll = write_tx.clone();
+    let scroller_for_scroll = scroller.clone();
+    controller.connect_scroll(move |_, _dx, dy| {
+        // Empty deltas show up occasionally on touchpads; nothing
+        // to do.
+        if dy == 0.0 {
+            return glib::Propagation::Proceed;
+        }
+
+        let mut state_mut = state_for_scroll.borrow_mut();
+
+        let mouse_tracking = state_mut.terminal.mouse_tracking_active();
+        let alt_screen = state_mut.terminal.on_alt_screen();
+
+        // Discrete-flag scrolls deliver |dy| == 1.0 per notch; on
+        // some hardware this can be 2 or 3 if the OS coalesced them.
+        // Cap so a frantic touchpad swipe can't dump 50 keys at once.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ticks = (dy.abs().round() as u32).clamp(1, 8);
+        let scroll_up = dy < 0.0;
+
+        // Three cases, ordered by precedence:
+        //
+        // 1. The app explicitly asked for mouse tracking (htop, tmux,
+        //    vim with `set mouse=a`) — encode real wheel events.
+        // 2. We're on the alternate screen but the app didn't ask for
+        //    mouse (vim/nano default, less). Synthesize Up/Down arrow
+        //    presses so scroll wheel still moves the cursor — this is
+        //    what gnome-terminal, kitty, and alacritty do.
+        // 3. Primary screen + no mouse tracking — let the surrounding
+        //    ScrolledWindow handle scrollback natively.
+        if mouse_tracking {
+            // Split-borrow the cell into &mut encoder + & terminal so
+            // we can call sync + encode without tripping the borrow
+            // checker.
+            let PaneState {
+                ref mut mouse_encoder,
+                ref terminal,
+                ..
+            } = *state_mut;
+
+            mouse_encoder.sync_from_terminal(terminal);
+
+            // Centre of the viewport as a stand-in pointer position.
+            // Apps that handle wheel events generally don't care where
+            // in the pane the wheel ticked from.
+            #[allow(clippy::cast_precision_loss)]
+            let cx = (scroller_for_scroll.width() as f32) * 0.5;
+            #[allow(clippy::cast_precision_loss)]
+            let cy = (scroller_for_scroll.height() as f32) * 0.5;
+
+            let button = if scroll_up {
+                MouseButton::WheelUp
+            } else {
+                MouseButton::WheelDown
+            };
+
+            for _ in 0..ticks {
+                match mouse_encoder.encode(MouseAction::Press, button, cx, cy) {
+                    Ok(bytes) if !bytes.is_empty() => {
+                        let _ = write_tx_for_scroll.send(bytes);
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!("[mugenkai] mouse encode failed: {err}");
+                        break;
+                    }
+                }
+            }
+            glib::Propagation::Stop
+        } else if alt_screen {
+            let bytes: &[u8] = if scroll_up { b"\x1b[A" } else { b"\x1b[B" };
+            for _ in 0..ticks {
+                let _ = write_tx_for_scroll.send(bytes.to_vec());
+            }
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    vbox.add_controller(controller);
+}
+
 /// Poll the scroller's allocated pixel size and, if it differs
 /// from the grid we last pushed, resize the libghostty-vt terminal
 /// and send a `Winsize` to the pty worker so programs inside
@@ -690,12 +805,9 @@ fn maybe_apply_resize(
             // Keep the mouse encoder's screen geometry in sync so
             // scroll events report cell coordinates against the
             // current grid, not the stale 80x24 default.
-            state_mut.mouse_encoder.set_size(
-                cols_u32.saturating_mul(cw),
-                rows_u32.saturating_mul(ch),
-                cw,
-                ch,
-            );
+            state_mut
+                .mouse_encoder
+                .set_size(cols_u32.saturating_mul(cw), rows_u32.saturating_mul(ch), cw, ch);
             let px_w = u16::try_from(cols_u32.saturating_mul(cw)).unwrap_or(u16::MAX);
             let px_h = u16::try_from(rows_u32.saturating_mul(ch)).unwrap_or(u16::MAX);
             let _ = resize_tx.send(Winsize::new(cols, rows, px_w, px_h));
@@ -715,6 +827,15 @@ fn maybe_apply_resize(
 /// - pango units (1/1024 of a pixel) for the per-cell width, used
 ///   by the resize watcher to compute `cols` with sub-pixel
 ///   precision so the grid never overflows the viewport
+///
+/// We lay out a probe of N 'M' characters in the label's actual
+/// pango context (so we pick up whatever monospace font the user's
+/// system applied via the `.monospace` CSS class) and divide the
+/// measured probe size by N. Pango units come from
+/// `pango::Layout::size`; pixel values come from `pixel_size`.
+///
+/// Returns `(cell_width_px, cell_height_px, cell_width_units)` —
+/// pixels are clamped to ≥1 so subsequent divisions can't trip.
 fn measure_monospace_cell(label: &gtk4::Label) -> (u32, u32, i32) {
     const PROBE_LEN: i32 = 200;
 
@@ -729,7 +850,14 @@ fn measure_monospace_cell(label: &gtk4::Label) -> (u32, u32, i32) {
     let (probe_width_px, line_height_px) = layout.pixel_size();
     let (probe_width_units, _) = layout.size();
 
+    // Per-cell width in pango units, computed by dividing the
+    // probe's exact unit width by the probe length. This is the
+    // value the resize watcher uses for sub-pixel cols arithmetic.
     let cell_width_units = (probe_width_units / PROBE_LEN).max(1);
+
+    // Per-cell width in integer pixels — round to nearest. The
+    // mouse encoder + libghostty-vt only need this for screen-size
+    // bookkeeping; small rounding is fine.
     let width_px = ((probe_width_px + PROBE_LEN / 2) / PROBE_LEN).max(1);
     let height_px = line_height_px.max(1);
 
