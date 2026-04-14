@@ -9,7 +9,20 @@ use host_core::{MugenkaiConfig, to_gtk_accelerator};
 
 use crate::css;
 use crate::pane_widget::install_pane_key_controller_dynamic;
+use crate::settings_view::SettingsView;
 use crate::split_container::SplitContainer;
+
+/// Which kind of content lives in a given tab.
+///
+/// Terminal tabs own a [`SplitContainer`]; the Settings tab
+/// owns a [`SettingsView`]. Keybinding handlers that only make
+/// sense for terminal tabs (split, close-pane, focus-next)
+/// short-circuit when the active tab is a Settings tab.
+#[derive(Clone)]
+enum TabKind {
+    Terminal(Rc<SplitContainer>),
+    Settings(#[allow(dead_code)] Rc<SettingsView>),
+}
 
 /// The top-level application window.
 ///
@@ -25,8 +38,8 @@ use crate::split_container::SplitContainer;
 ///                 └── leaves are PaneWidgets running shell PTYs
 /// ```
 ///
-/// The window owns an `Rc<RefCell<Vec<Rc<SplitContainer>>>>`
-/// that tracks split containers in lockstep with the
+/// The window owns an `Rc<RefCell<Vec<TabKind>>>`
+/// that tracks split tabs in lockstep with the
 /// `AdwTabView`'s pages. Cycling / closing tabs manipulates
 /// this vector plus the tab view together; the keyboard
 /// controller queries the currently active container every
@@ -34,9 +47,9 @@ use crate::split_container::SplitContainer;
 /// now.
 pub struct MugenkaiWindow {
     inner: adw::ApplicationWindow,
-    // Held to keep the containers + their worker threads alive
-    // for the window's lifetime.
-    _containers: Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    // Held to keep tab-owned widgets + their worker threads
+    // alive for the window's lifetime.
+    _tabs: Rc<RefCell<Vec<TabKind>>>,
 }
 
 impl MugenkaiWindow {
@@ -71,23 +84,22 @@ impl MugenkaiWindow {
             .build();
         toolbar_view.add_top_bar(&tab_bar);
 
-        // Shared vector of split containers; index-locked with
-        // tab_view.n_pages(). Wrapped in Rc<RefCell<>> so
-        // every action handler can clone a reference.
-        let containers: Rc<RefCell<Vec<Rc<SplitContainer>>>> = Rc::new(RefCell::new(Vec::new()));
+        // Shared vector of tab kinds; index-locked with
+        // tab_view.n_pages(). Wrapped in Rc<RefCell<>> so every
+        // action handler can clone a reference.
+        let tabs: Rc<RefCell<Vec<TabKind>>> = Rc::new(RefCell::new(Vec::new()));
 
-        // Append the initial tab. The new_tab helper keeps the
-        // vector and the tab view in sync.
-        new_tab(&tab_view, &containers, config, "shell");
+        // Append the initial terminal tab. The new_terminal_tab
+        // helper keeps the vector and the tab view in sync.
+        new_terminal_tab(&tab_view, &tabs, config, "shell");
 
-        // Keyboard input routes to the active tab's focused
-        // pane's input sender, looked up fresh on every key.
-        let containers_for_keys = Rc::clone(&containers);
+        // Keyboard input routes to the active terminal tab's
+        // focused pane's input sender. Settings tabs don't route
+        // keys — they're fully handled by GTK focus.
+        let tabs_for_keys = Rc::clone(&tabs);
         let tab_view_for_keys = tab_view.clone();
         install_pane_key_controller_dynamic(&window, move || {
-            let pos = selected_index(&tab_view_for_keys)?;
-            let containers = containers_for_keys.borrow();
-            let container = containers.get(pos)?;
+            let container = active_container(&tab_view_for_keys, &tabs_for_keys)?;
             container.focused_input_sender()
         });
 
@@ -98,11 +110,11 @@ impl MugenkaiWindow {
 
         window.set_content(Some(&toast_overlay));
 
-        Self::install_shortcuts(&window, app, &tab_view, &containers, config);
+        Self::install_shortcuts(&window, app, &tab_view, &tabs, config);
 
         Self {
             inner: window,
-            _containers: containers,
+            _tabs: tabs,
         }
     }
 
@@ -110,7 +122,7 @@ impl MugenkaiWindow {
         window: &adw::ApplicationWindow,
         app: &adw::Application,
         tab_view: &adw::TabView,
-        containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+        tabs: &Rc<RefCell<Vec<TabKind>>>,
         config: &Rc<MugenkaiConfig>,
     ) {
         let kb = &config.keybindings;
@@ -120,7 +132,7 @@ impl MugenkaiWindow {
             window,
             app,
             tab_view,
-            containers,
+            tabs,
             "split-horizontal",
             &kb.split_horizontal,
             SplitDirection::Right,
@@ -129,17 +141,17 @@ impl MugenkaiWindow {
             window,
             app,
             tab_view,
-            containers,
+            tabs,
             "split-vertical",
             &kb.split_vertical,
             SplitDirection::Down,
         );
-        install_close_pane_action(window, app, tab_view, containers, &kb.close_pane);
+        install_close_pane_action(window, app, tab_view, tabs, &kb.close_pane);
         install_focus_action(
             window,
             app,
             tab_view,
-            containers,
+            tabs,
             "focus-next",
             &kb.focus_next,
             /* forward */ true,
@@ -148,13 +160,13 @@ impl MugenkaiWindow {
             window,
             app,
             tab_view,
-            containers,
+            tabs,
             "focus-prev",
             &kb.focus_prev,
             /* forward */ false,
         );
-        install_new_tab_action(window, app, tab_view, containers, config, &kb.new_tab);
-        install_close_tab_action(window, app, tab_view, containers, &kb.close_tab);
+        install_new_tab_action(window, app, tab_view, tabs, config, &kb.new_tab);
+        install_close_tab_action(window, app, tab_view, tabs, &kb.close_tab);
         install_cycle_tab_action(window, app, tab_view, "next-tab", &kb.next_tab, true);
         install_cycle_tab_action(window, app, tab_view, "prev-tab", &kb.prev_tab, false);
     }
@@ -170,12 +182,11 @@ impl MugenkaiWindow {
     }
 }
 
-/// Append a new tab to `tab_view` containing a fresh
-/// [`SplitContainer`], push the container into `containers`,
-/// and make the new tab active.
-fn new_tab(
+/// Append a new terminal tab containing a fresh [`SplitContainer`]
+/// and make it active.
+fn new_terminal_tab(
     tab_view: &adw::TabView,
-    containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
     config: &Rc<MugenkaiConfig>,
     title: &str,
 ) {
@@ -183,12 +194,12 @@ fn new_tab(
     let page = tab_view.append(container.widget());
     page.set_title(title);
 
-    containers.borrow_mut().push(container);
+    tabs.borrow_mut().push(TabKind::Terminal(container));
     tab_view.set_selected_page(&page);
 }
 
-/// Return the active page position (index into the container
-/// vector) or None if the tab view has no pages.
+/// Return the active page position (index into the tabs vector)
+/// or `None` if the tab view has no pages.
 fn selected_index(tab_view: &adw::TabView) -> Option<usize> {
     let page = tab_view.selected_page()?;
     let idx = tab_view.page_position(&page);
@@ -199,12 +210,17 @@ fn selected_index(tab_view: &adw::TabView) -> Option<usize> {
     }
 }
 
+/// Return the active tab's `SplitContainer`, or `None` when the
+/// active tab is a Settings tab (or the tab view is empty).
 fn active_container(
     tab_view: &adw::TabView,
-    containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
 ) -> Option<Rc<SplitContainer>> {
     let idx = selected_index(tab_view)?;
-    containers.borrow().get(idx).cloned()
+    match tabs.borrow().get(idx)? {
+        TabKind::Terminal(container) => Some(Rc::clone(container)),
+        TabKind::Settings(_) => None,
+    }
 }
 
 // ─── action installers ─────────────────────────────────────────
@@ -226,16 +242,16 @@ fn install_split_action(
     window: &adw::ApplicationWindow,
     app: &adw::Application,
     tab_view: &adw::TabView,
-    containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
     name: &str,
     accel_str: &str,
     direction: SplitDirection,
 ) {
     let action = gio::SimpleAction::new(name, None);
     let tab_view = tab_view.clone();
-    let containers = Rc::clone(containers);
+    let tabs = Rc::clone(tabs);
     action.connect_activate(move |_, _| {
-        if let Some(container) = active_container(&tab_view, &containers) {
+        if let Some(container) = active_container(&tab_view, &tabs) {
             container.split_focused(direction);
         }
     });
@@ -247,23 +263,25 @@ fn install_close_pane_action(
     window: &adw::ApplicationWindow,
     app: &adw::Application,
     tab_view: &adw::TabView,
-    containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
     accel_str: &str,
 ) {
     let action = gio::SimpleAction::new("close-pane", None);
     let tab_view_clone = tab_view.clone();
-    let containers_clone = Rc::clone(containers);
+    let tabs_clone = Rc::clone(tabs);
     action.connect_activate(glib::clone!(
         #[weak]
         window,
         move |_, _| {
-            let Some(container) = active_container(&tab_view_clone, &containers_clone) else {
+            let Some(container) = active_container(&tab_view_clone, &tabs_clone) else {
+                // Settings tab: route close-pane to close-tab.
+                close_active_tab(&tab_view_clone, &tabs_clone, &window);
                 return;
             };
             if !container.close_focused() {
                 // Last pane in the tab — close the tab. If
                 // that was the last tab, close the window.
-                close_active_tab(&tab_view_clone, &containers_clone, &window);
+                close_active_tab(&tab_view_clone, &tabs_clone, &window);
             }
         }
     ));
@@ -275,16 +293,16 @@ fn install_focus_action(
     window: &adw::ApplicationWindow,
     app: &adw::Application,
     tab_view: &adw::TabView,
-    containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
     name: &str,
     accel_str: &str,
     forward: bool,
 ) {
     let action = gio::SimpleAction::new(name, None);
     let tab_view = tab_view.clone();
-    let containers = Rc::clone(containers);
+    let tabs = Rc::clone(tabs);
     action.connect_activate(move |_, _| {
-        let Some(container) = active_container(&tab_view, &containers) else {
+        let Some(container) = active_container(&tab_view, &tabs) else {
             return;
         };
         if forward {
@@ -301,16 +319,16 @@ fn install_new_tab_action(
     window: &adw::ApplicationWindow,
     app: &adw::Application,
     tab_view: &adw::TabView,
-    containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
     config: &Rc<MugenkaiConfig>,
     accel_str: &str,
 ) {
     let action = gio::SimpleAction::new("new-tab", None);
     let tab_view = tab_view.clone();
-    let containers = Rc::clone(containers);
+    let tabs = Rc::clone(tabs);
     let config = Rc::clone(config);
     action.connect_activate(move |_, _| {
-        new_tab(&tab_view, &containers, &config, "shell");
+        new_terminal_tab(&tab_view, &tabs, &config, "shell");
     });
     window.add_action(&action);
     set_accel(app, "win.new-tab", accel_str);
@@ -320,17 +338,17 @@ fn install_close_tab_action(
     window: &adw::ApplicationWindow,
     app: &adw::Application,
     tab_view: &adw::TabView,
-    containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
     accel_str: &str,
 ) {
     let action = gio::SimpleAction::new("close-tab", None);
     let tab_view_clone = tab_view.clone();
-    let containers_clone = Rc::clone(containers);
+    let tabs_clone = Rc::clone(tabs);
     action.connect_activate(glib::clone!(
         #[weak]
         window,
         move |_, _| {
-            close_active_tab(&tab_view_clone, &containers_clone, &window);
+            close_active_tab(&tab_view_clone, &tabs_clone, &window);
         }
     ));
     window.add_action(&action);
@@ -359,7 +377,7 @@ fn install_cycle_tab_action(
 /// tab was just removed.
 fn close_active_tab(
     tab_view: &adw::TabView,
-    containers: &Rc<RefCell<Vec<Rc<SplitContainer>>>>,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
     window: &adw::ApplicationWindow,
 ) {
     let Some(idx) = selected_index(tab_view) else {
@@ -377,13 +395,13 @@ fn close_active_tab(
     tab_view.close_page_finish(&page, true);
 
     {
-        let mut list = containers.borrow_mut();
+        let mut list = tabs.borrow_mut();
         if idx < list.len() {
             list.remove(idx);
         }
     }
 
-    if containers.borrow().is_empty() {
+    if tabs.borrow().is_empty() {
         window.close();
     }
 }
