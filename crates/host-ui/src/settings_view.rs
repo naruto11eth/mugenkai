@@ -31,7 +31,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use host_core::{CursorStyle, KeyBindings, MugenkaiConfig};
+use host_core::{CursorStyle, FontConfig, KeyBindings, MugenkaiConfig};
 
 /// The settings tab widget.
 ///
@@ -70,6 +70,10 @@ struct SettingsRows {
     focus_ring: adw::SwitchRow,
     focus_ring_color: adw::EntryRow,
     split_ratio: adw::SpinRow,
+
+    // ─── font ────────────────────────────────────────────────
+    font_family: adw::EntryRow,
+    font_size_pt: adw::SpinRow,
 }
 
 impl SettingsView {
@@ -169,6 +173,19 @@ impl SettingsView {
         pane_group.add(&split_ratio);
         page.add(&pane_group);
 
+        // ─── font group ───────────────────────────────────
+        let font_group = adw::PreferencesGroup::builder().title("Font").build();
+
+        let font_family = entry_row("Family (pango, e.g. 'monospace' or 'JetBrains Mono')", &config.font.family);
+        let font_size_pt = adw::SpinRow::with_range(6.0, 48.0, 0.5);
+        font_size_pt.set_title("Size (pt)");
+        font_size_pt.set_digits(1);
+        font_size_pt.set_value(f64::from(config.font.size_pt));
+
+        font_group.add(&font_family);
+        font_group.add(&font_size_pt);
+        page.add(&font_group);
+
         // ─── action buttons ───────────────────────────────
         let actions = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Horizontal)
@@ -242,6 +259,8 @@ impl SettingsView {
             focus_ring,
             focus_ring_color,
             split_ratio,
+            font_family,
+            font_size_pt,
         };
 
         let view = Rc::new(Self {
@@ -322,6 +341,12 @@ impl SettingsView {
             cfg.pane.split_ratio = rows.split_ratio.value() as f32;
         }
 
+        cfg.font = FontConfig {
+            family: rows.font_family.text().to_string(),
+            #[allow(clippy::cast_possible_truncation)]
+            size_pt: rows.font_size_pt.value() as f32,
+        };
+
         cfg
     }
 
@@ -378,6 +403,10 @@ impl SettingsView {
             .set_text(&defaults.pane.focus_ring_color);
         rows.split_ratio
             .set_value(f64::from(defaults.pane.split_ratio));
+
+        rows.font_family.set_text(&defaults.font.family);
+        rows.font_size_pt
+            .set_value(f64::from(defaults.font.size_pt));
 
         self.toast("Reset to defaults. Click Save to persist.");
     }

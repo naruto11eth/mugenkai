@@ -79,7 +79,7 @@ impl SplitContainer {
     #[must_use]
     pub fn with_config(config: Rc<MugenkaiConfig>) -> Self {
         let tree = Rc::new(RefCell::new(PaneTree::new()));
-        let root_pane = PaneWidget::with_cursor_config(&config.cursor);
+        let root_pane = PaneWidget::with_config(&config);
         let root_id = tree.borrow().focused();
 
         let mut map = HashMap::new();
@@ -128,7 +128,7 @@ impl SplitContainer {
     /// pane inherits cursor settings from the container's config.
     pub fn split_focused(&self, direction: SplitDirection) {
         let new_id = self.tree.borrow_mut().split(direction);
-        let new_pane = PaneWidget::with_cursor_config(&self.config.cursor);
+        let new_pane = PaneWidget::with_config(&self.config);
         self.panes.borrow_mut().insert(new_id, new_pane);
         self.rematerialize();
     }

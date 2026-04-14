@@ -52,6 +52,32 @@ pub struct MugenkaiConfig {
     pub keybindings: KeyBindings,
     pub cursor: CursorConfig,
     pub pane: PaneConfig,
+    pub font: FontConfig,
+}
+
+/// Typography settings for the monospace terminal grid.
+///
+/// Applied to the selectable label that renders the pty output
+/// via a pango font description. Changing `family` or `size_pt`
+/// and reloading the pane forces the resize watcher to re-measure
+/// the cell grid so `cols`/`rows` tracks the new glyph metrics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontConfig {
+    pub family: String,
+    pub size_pt: f32,
+}
+
+impl Default for FontConfig {
+    fn default() -> Self {
+        Self {
+            // `monospace` picks up whatever the user's system has
+            // configured as their monospace font — typically the
+            // distro's default (e.g. DejaVu Sans Mono on Ubuntu,
+            // JetBrains Mono if the user installed it).
+            family: "monospace".into(),
+            size_pt: 11.0,
+        }
+    }
 }
 
 /// Keybinding accelerators in a simple "ctrl+shift+KEY" format.
@@ -275,6 +301,15 @@ impl MugenkaiConfig {
             "{:<48} = {}",
             "mugenkai-pane-split-ratio", self.pane.split_ratio
         );
+        out.push('\n');
+
+        out.push_str("# ─── font ────────────────────────────────────────────────\n");
+        let _ = writeln!(out, "{:<48} = {}", "mugenkai-font-family", self.font.family);
+        let _ = writeln!(
+            out,
+            "{:<48} = {}",
+            "mugenkai-font-size-pt", self.font.size_pt
+        );
 
         out
     }
@@ -426,6 +461,24 @@ impl MugenkaiConfig {
                     && (0.05..=0.95).contains(&r)
                 {
                     self.pane.split_ratio = r;
+                } else {
+                    warn_invalid(line_no, key, value);
+                }
+            }
+
+            // ─── font ────────────────────────────────────────
+            "mugenkai-font-family" => {
+                if value.is_empty() {
+                    warn_invalid(line_no, key, value);
+                } else {
+                    self.font.family = value.into();
+                }
+            }
+            "mugenkai-font-size-pt" => {
+                if let Ok(v) = value.parse::<f32>()
+                    && (4.0..=96.0).contains(&v)
+                {
+                    self.font.size_pt = v;
                 } else {
                     warn_invalid(line_no, key, value);
                 }

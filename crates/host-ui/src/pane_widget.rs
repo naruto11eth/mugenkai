@@ -50,7 +50,9 @@ use host_ghostty::{
 };
 use host_pty::{Child, SpawnOptions, Winsize};
 
-use host_core::{CursorConfig as CoreCursorConfig, CursorStyle};
+use host_core::{
+    CursorConfig as CoreCursorConfig, CursorStyle, FontConfig as CoreFontConfig, MugenkaiConfig,
+};
 
 use crate::pango_markup::{CursorShape, CursorSpan, html_to_pango_markup, splice_cursor};
 
@@ -115,6 +117,12 @@ struct PaneState {
     /// terminal expects (X10 / SGR / UTF8 / URXVT). One encoder per
     /// pane so reuse keeps the per-event allocation cost flat.
     mouse_encoder: MouseEncoder,
+    /// Pango font description string used to wrap every rendered
+    /// label update in `<span font_desc="...">` — this is how the
+    /// user's configured monospace font + size reaches the label
+    /// without touching GTK CSS. Formatted once at construction
+    /// time as `"<family> <size>"` (pango's native syntax).
+    font_desc_str: String,
 }
 
 impl Drop for PaneState {
@@ -171,19 +179,36 @@ impl Drop for PaneController {
 }
 
 impl PaneWidget {
-    /// Build a pane with default cursor settings. Used by tests
-    /// and stand-alone demos; production code uses
-    /// [`with_cursor_config`](Self::with_cursor_config).
+    /// Build a pane with default cursor + font settings. Used by
+    /// tests and stand-alone demos; production code uses
+    /// [`with_config`](Self::with_config).
     #[must_use]
     pub fn new() -> Self {
         Self::with_cursor_config(&CoreCursorConfig::default())
     }
 
+    /// Build a pane driven by the user's full configuration —
+    /// cursor style, colors, blink cadence, AND font family/size.
+    ///
+    /// This is the production entry point; [`new`](Self::new) and
+    /// [`with_cursor_config`](Self::with_cursor_config) are
+    /// convenience wrappers for tests.
+    #[must_use]
+    pub fn with_config(cfg: &MugenkaiConfig) -> Self {
+        Self::with_cursor_and_font(&cfg.cursor, &cfg.font)
+    }
+
     /// Build a pane with cursor appearance driven by the user's
-    /// configuration.
+    /// configuration, using the system default font.
+    #[must_use]
+    pub fn with_cursor_config(cursor_cfg: &CoreCursorConfig) -> Self {
+        Self::with_cursor_and_font(cursor_cfg, &CoreFontConfig::default())
+    }
+
+    /// Build a pane with explicit cursor + font configuration.
     #[must_use]
     #[allow(clippy::too_many_lines)]
-    pub fn with_cursor_config(cursor_cfg: &CoreCursorConfig) -> Self {
+    pub fn with_cursor_and_font(cursor_cfg: &CoreCursorConfig, font_cfg: &CoreFontConfig) -> Self {
         let vbox = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
             .spacing(6)
@@ -232,12 +257,19 @@ impl PaneWidget {
             .build();
         vbox.append(&scroller);
 
+        // Build the pango font description string once. Pango's
+        // `from_string` accepts `"<family> <size>"` like
+        // "JetBrains Mono 11" — we emit the same format here and
+        // both the cell-measurement probe and the markup wrapper
+        // use it, guaranteeing they agree on glyph metrics.
+        let font_desc_str = format!("{} {}", font_cfg.family, font_cfg.size_pt);
+
         // Measure one monospace cell's pixel size now, before the
-        // worker thread starts. The label's pango context inherits
-        // the system monospace font from our CSS class, so the
-        // metrics match what the user will actually see rendered.
+        // worker thread starts. We measure with the user's
+        // configured font so the cell grid matches what pango
+        // will actually lay out when refresh_labels runs.
         let (cell_width_px, cell_height_px, cell_width_units) =
-            measure_monospace_cell(&screen_label);
+            measure_monospace_cell(&screen_label, &font_desc_str);
 
         let initial_cols: u16 = 80;
         let initial_rows: u16 = 24;
@@ -294,6 +326,7 @@ impl PaneWidget {
             last_cols: initial_cols,
             last_rows: initial_rows,
             mouse_encoder,
+            font_desc_str,
         }));
 
         let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
@@ -673,6 +706,8 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
         Ok(formatter) => formatter.format(),
         Err(err) => Err(err),
     };
+    let font_desc_attr = &state.font_desc_str;
+
     match html {
         Ok(html) => {
             let mut markup = html_to_pango_markup(&html);
@@ -694,7 +729,12 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
                     &state.cursor_span,
                 );
             }
-            screen_label.set_markup(&markup);
+            // Wrap the whole rendered grid in an outer span that
+            // sets the user's configured monospace font. Pango
+            // spans inherit attributes from parents, so the inner
+            // fg/bg spans layer on top without overriding this.
+            let wrapped = format!("<span font_desc=\"{font_desc_attr}\">{markup}</span>");
+            screen_label.set_markup(&wrapped);
         }
         Err(err) => {
             // HTML format failed (rare) — drop to plain text so
@@ -899,13 +939,11 @@ fn maybe_apply_resize(
 ///
 /// Returns `(cell_width_px, cell_height_px, cell_width_units)` —
 /// pixels are clamped to ≥1 so subsequent divisions can't trip.
-fn measure_monospace_cell(label: &gtk4::Label) -> (u32, u32, i32) {
+fn measure_monospace_cell(label: &gtk4::Label, font_desc_str: &str) -> (u32, u32, i32) {
     const PROBE_LEN: i32 = 200;
 
     let ctx = label.pango_context();
-    let font_desc = ctx
-        .font_description()
-        .unwrap_or_else(|| pango::FontDescription::from_string("monospace 11"));
+    let font_desc = pango::FontDescription::from_string(font_desc_str);
 
     let layout = pango::Layout::new(&ctx);
     layout.set_font_description(Some(&font_desc));
