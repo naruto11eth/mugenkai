@@ -154,24 +154,37 @@ impl SplitContainer {
             .map(PaneWidget::input_sender)
     }
 
-    /// Apply the `.mugenkai-pane-focused` CSS class to the focused
-    /// pane and `.mugenkai-pane-unfocused` to every other one.
+    /// Tell every pane whether it is the tree-focused one and
+    /// apply matching CSS classes.
+    ///
+    /// This does two things in lockstep so they can't drift:
+    ///
+    /// 1. Each [`PaneWidget`] gets `set_focused(id == focused_id)`
+    ///    so only the focused pane renders its cursor. Without
+    ///    this, every pane would splice its own cursor and a
+    ///    split layout would show phantom cursors everywhere.
+    /// 2. CSS classes `.mugenkai-pane-focused` /
+    ///    `.mugenkai-pane-unfocused` toggle so the focus ring
+    ///    follows the keyboard focus visually.
+    ///
     /// Called from [`rematerialize`](Self::rematerialize) after
     /// the widget tree is rebuilt.
     fn apply_focus_styling(&self) {
-        if !self.config.pane.focus_ring {
-            return;
-        }
         let focused = self.tree.borrow().focused();
         let panes = self.panes.borrow();
+        let ring_on = self.config.pane.focus_ring;
         for (&id, pane) in panes.iter() {
-            let widget = pane.widget();
-            if id == focused {
-                widget.remove_css_class("mugenkai-pane-unfocused");
-                widget.add_css_class("mugenkai-pane-focused");
-            } else {
-                widget.remove_css_class("mugenkai-pane-focused");
-                widget.add_css_class("mugenkai-pane-unfocused");
+            let is_focused = id == focused;
+            pane.set_focused(is_focused);
+            if ring_on {
+                let widget = pane.widget();
+                if is_focused {
+                    widget.remove_css_class("mugenkai-pane-unfocused");
+                    widget.add_css_class("mugenkai-pane-focused");
+                } else {
+                    widget.remove_css_class("mugenkai-pane-focused");
+                    widget.add_css_class("mugenkai-pane-unfocused");
+                }
             }
         }
     }
