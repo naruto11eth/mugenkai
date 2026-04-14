@@ -6,6 +6,7 @@ use gtk4::{gio, glib};
 
 use host_core::MugenkaiConfig;
 
+use crate::daemon_client::DaemonClient;
 use crate::window::MugenkaiWindow;
 
 /// Reverse-DNS app id used for GTK's `application_id` and the desktop
@@ -25,6 +26,14 @@ pub struct MugenkaiApplication {
     // connect_activate closure; Rc so the closure and the outer
     // struct can both reach it.
     windows: Rc<RefCell<Vec<MugenkaiWindow>>>,
+    // Sidecar daemon connection. Spawned lazily on first window
+    // activation; held in a RefCell<Option<>> so the failure case
+    // (daemon binary missing in tests, no bun on PATH) degrades
+    // gracefully — mugenkai keeps running as a plain terminal
+    // and skill-powered features just no-op until the user sets
+    // `MUGENKAI_DAEMON_CMD` and restarts.
+    #[allow(dead_code)]
+    daemon: Rc<RefCell<Option<DaemonClient>>>,
 }
 
 impl MugenkaiApplication {
@@ -50,10 +59,31 @@ impl MugenkaiApplication {
 
         let config = Rc::new(config);
         let windows: Rc<RefCell<Vec<MugenkaiWindow>>> = Rc::default();
+        let daemon: Rc<RefCell<Option<DaemonClient>>> = Rc::default();
 
         let windows_clone = Rc::clone(&windows);
         let config_clone = Rc::clone(&config);
+        let daemon_clone = Rc::clone(&daemon);
         inner.connect_activate(move |app| {
+            // Spawn the sidecar daemon the first time a window
+            // activates. Subsequent activations reuse the existing
+            // connection.
+            if daemon_clone.borrow().is_none() {
+                match DaemonClient::spawn_and_connect() {
+                    Ok(client) => {
+                        eprintln!("[mugenkai] daemon ready");
+                        *daemon_clone.borrow_mut() = Some(client);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "[mugenkai] daemon unavailable: {err}. \
+                             Running without skills — set MUGENKAI_DAEMON_CMD and \
+                             restart to enable."
+                        );
+                    }
+                }
+            }
+
             let window = MugenkaiWindow::with_config(app, &config_clone);
             window.present();
             windows_clone.borrow_mut().push(window);
@@ -63,6 +93,7 @@ impl MugenkaiApplication {
             inner,
             config,
             windows,
+            daemon,
         }
     }
 

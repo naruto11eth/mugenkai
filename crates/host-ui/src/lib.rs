@@ -10,6 +10,7 @@
 
 mod app;
 mod css;
+mod daemon_client;
 mod pane_widget;
 mod pango_markup;
 mod settings_view;
