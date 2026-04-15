@@ -221,7 +221,74 @@ impl ChatView {
         // default paste handler. Plain Ctrl+V still performs
         // the Entry's built-in text paste.
 
+        view.install_drop_target();
+
         view
+    }
+
+    /// Wire a drop target onto the chat root so users can drag
+    /// image files (from a file manager, browser, screenshot
+    /// tool, etc.) onto the chat to attach them.
+    ///
+    /// Accepts both `gdk::FileList` (Linux native drag from
+    /// Nautilus / Files) and a single `gio::File` for compatibility
+    /// with apps that hand a single URI. We feed each file through
+    /// the same `add_attachment_from_bytes` path the clipboard
+    /// paste uses, so size limits + MIME detection stay in one
+    /// place.
+    fn install_drop_target(self: &Rc<Self>) {
+        // gdk::FileList covers the multi-file case; gio::File the
+        // single-file one. Listing both makes us robust against
+        // different drag sources advertising different types.
+        let drop = gtk4::DropTarget::new(
+            gtk4::glib::Type::INVALID,
+            gtk4::gdk::DragAction::COPY,
+        );
+        drop.set_types(&[gtk4::gdk::FileList::static_type(), gtk4::gio::File::static_type()]);
+
+        let view_clone = Rc::clone(self);
+        drop.connect_drop(move |_, value, _, _| {
+            // Try FileList first (n files), then fall back to a
+            // single gio::File. If neither shape applies we let
+            // the drop fail so GTK can show the no-drop cursor.
+            if let Ok(file_list) = value.get::<gtk4::gdk::FileList>() {
+                let files = file_list.files();
+                if files.is_empty() {
+                    return false;
+                }
+                for file in files {
+                    view_clone.read_and_attach_file(&file);
+                }
+                return true;
+            }
+            if let Ok(file) = value.get::<gtk4::gio::File>() {
+                view_clone.read_and_attach_file(&file);
+                return true;
+            }
+            false
+        });
+
+        self.root.add_controller(drop);
+    }
+
+    /// Read a `gio::File` asynchronously and stage its bytes as a
+    /// pending attachment. Toasts on read failure so the user
+    /// knows the drop did something.
+    fn read_and_attach_file(self: &Rc<Self>, file: &gtk4::gio::File) {
+        let view_clone = Rc::clone(self);
+        let display_name = file
+            .basename()
+            .map_or_else(|| "file".to_string(), |p| p.display().to_string());
+        file.load_bytes_async(None::<&gtk4::gio::Cancellable>, move |result| {
+            match result {
+                Ok((bytes, _etag)) => {
+                    view_clone.add_attachment_from_bytes(&bytes);
+                }
+                Err(err) => {
+                    view_clone.toast(&format!("Couldn't read {display_name}: {err}"));
+                }
+            }
+        });
     }
 
     /// Widget handle for insertion into an `AdwTabView` page.
