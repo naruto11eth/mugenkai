@@ -65,6 +65,7 @@ impl MugenkaiWindow {
 
     /// Build a window using the user's configuration.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn with_config(app: &adw::Application, config: &Rc<MugenkaiConfig>) -> Self {
         css::install_design_system(&config.theme, &config.pane.focus_ring_color);
 
@@ -75,31 +76,15 @@ impl MugenkaiWindow {
             .default_height(800)
             .build();
 
-        let toolbar_view = adw::ToolbarView::new();
-
-        let header = adw::HeaderBar::new();
-        toolbar_view.add_top_bar(&header);
-
-        // Tab surface — auto-hides when only one tab exists.
+        // ─── tab view (hidden, drives content) ───────────
         let tab_view = adw::TabView::new();
-        let tab_bar = adw::TabBar::builder()
-            .view(&tab_view)
-            .autohide(true)
-            .build();
-        toolbar_view.add_top_bar(&tab_bar);
 
-        // Shared vector of tab kinds; index-locked with
-        // tab_view.n_pages(). Wrapped in Rc<RefCell<>> so every
-        // action handler can clone a reference.
         let tabs: Rc<RefCell<Vec<TabKind>>> = Rc::new(RefCell::new(Vec::new()));
 
-        // Append the initial terminal tab. The new_terminal_tab
-        // helper keeps the vector and the tab view in sync.
         new_terminal_tab(&tab_view, &tabs, config, "shell");
 
         // Keyboard input routes to the active terminal tab's
-        // focused pane's input sender. Settings tabs don't route
-        // keys — they're fully handled by GTK focus.
+        // focused pane's input sender.
         let tabs_for_keys = Rc::clone(&tabs);
         let tab_view_for_keys = tab_view.clone();
         install_pane_key_controller_dynamic(&window, move || {
@@ -107,10 +92,42 @@ impl MugenkaiWindow {
             container.focused_input_sender()
         });
 
+        // ─── sidebar ────────────────────────────────────
+        let sidebar = build_sidebar(&tab_view, &tabs, config);
+
+        // ─── right side: header + tab content ────────────
+        let toolbar_view = adw::ToolbarView::new();
+        let header = adw::HeaderBar::new();
+        // Add a sidebar toggle button to the header bar.
+        let toggle_btn = gtk4::Button::builder()
+            .icon_name("sidebar-show-symbolic")
+            .css_classes(["flat"])
+            .build();
+        header.pack_start(&toggle_btn);
+        toolbar_view.add_top_bar(&header);
         toolbar_view.set_content(Some(&tab_view));
 
+        // ─── split view: sidebar | content ───────────────
+        let split_view = adw::OverlaySplitView::builder()
+            .sidebar(&sidebar)
+            .content(&toolbar_view)
+            .sidebar_position(gtk4::PackType::Start)
+            .collapsed(false)
+            .show_sidebar(true)
+            .min_sidebar_width(200.0)
+            .max_sidebar_width(280.0)
+            .build();
+
+        // Wire the toggle button to show/hide the sidebar.
+        {
+            let sv = split_view.clone();
+            toggle_btn.connect_clicked(move |_| {
+                sv.set_show_sidebar(!sv.shows_sidebar());
+            });
+        }
+
         let toast_overlay = adw::ToastOverlay::new();
-        toast_overlay.set_child(Some(&toolbar_view));
+        toast_overlay.set_child(Some(&split_view));
 
         window.set_content(Some(&toast_overlay));
 
@@ -191,6 +208,150 @@ impl MugenkaiWindow {
     pub fn inner(&self) -> &adw::ApplicationWindow {
         &self.inner
     }
+}
+
+/// Build the left sidebar with action buttons and a tab list.
+#[allow(clippy::too_many_lines)]
+fn build_sidebar(
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+    config: &Rc<MugenkaiConfig>,
+) -> gtk4::Box {
+    let sidebar = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
+        .spacing(4)
+        .css_classes(["mg-sidebar"])
+        .build();
+
+    // ─── action buttons row ──────────────────────────────
+    let actions = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(6)
+        .margin_top(8)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_bottom(4)
+        .build();
+
+    let new_term_btn = gtk4::Button::builder()
+        .icon_name("utilities-terminal-symbolic")
+        .tooltip_text("New terminal (Ctrl+Shift+T)")
+        .css_classes(["flat"])
+        .build();
+    let new_chat_btn = gtk4::Button::builder()
+        .icon_name("user-available-symbolic")
+        .tooltip_text("New chat (Ctrl+Shift+A)")
+        .css_classes(["flat"])
+        .build();
+    let settings_btn = gtk4::Button::builder()
+        .icon_name("emblem-system-symbolic")
+        .tooltip_text("Settings (Ctrl+,)")
+        .css_classes(["flat"])
+        .build();
+
+    actions.append(&new_term_btn);
+    actions.append(&new_chat_btn);
+    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    actions.append(&spacer);
+    actions.append(&settings_btn);
+
+    sidebar.append(&actions);
+
+    // Separator
+    let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+    sidebar.append(&sep);
+
+    // ─── tab list (vertical) ─────────────────────────────
+    let tab_list = gtk4::ListBox::builder()
+        .selection_mode(gtk4::SelectionMode::Single)
+        .css_classes(["navigation-sidebar"])
+        .vexpand(true)
+        .build();
+    sidebar.append(&tab_list);
+
+    // Sync the tab list with the AdwTabView's pages. We rebuild
+    // the list whenever the tab view's pages change.
+    let rebuild_tab_list = {
+        let tab_view = tab_view.clone();
+        let tabs = Rc::clone(tabs);
+        let tab_list = tab_list.clone();
+        move || {
+            // Clear existing rows.
+            while let Some(child) = tab_list.first_child() {
+                tab_list.remove(&child);
+            }
+            let n = tab_view.n_pages();
+            for i in 0..n {
+                let page = tab_view.nth_page(i);
+                let title = page.title();
+                let label = gtk4::Label::builder()
+                    .label(&*title)
+                    .halign(gtk4::Align::Start)
+                    .hexpand(true)
+                    .margin_start(8)
+                    .margin_end(8)
+                    .margin_top(6)
+                    .margin_bottom(6)
+                    .build();
+                tab_list.append(&label);
+            }
+            // Select the active tab.
+            if let Some(sel_page) = tab_view.selected_page() {
+                let pos = tab_view.page_position(&sel_page);
+                if pos >= 0
+                    && let Some(row) = tab_list.row_at_index(pos)
+                {
+                    tab_list.select_row(Some(&row));
+                }
+            }
+            // Keep borrow checker happy — drop tabs borrow.
+            let _ = &tabs;
+        }
+    };
+    rebuild_tab_list();
+
+    // When user clicks a row in the sidebar, switch the
+    // tab_view to that page.
+    {
+        let tab_view = tab_view.clone();
+        tab_list.connect_row_selected(move |_, row| {
+            if let Some(row) = row {
+                let idx = row.index();
+                if idx >= 0 {
+                    let page = tab_view.nth_page(idx);
+                    tab_view.set_selected_page(&page);
+                }
+            }
+        });
+    }
+
+    // Wire the action buttons to their window actions.
+    {
+        let tv = tab_view.clone();
+        let t = Rc::clone(tabs);
+        let c = Rc::clone(config);
+        new_term_btn.connect_clicked(move |_| {
+            new_terminal_tab(&tv, &t, &c, "shell");
+        });
+    }
+    {
+        let tv = tab_view.clone();
+        let t = Rc::clone(tabs);
+        new_chat_btn.connect_clicked(move |_| {
+            let _ = new_chat_tab(&tv, &t);
+        });
+    }
+    {
+        let tv = tab_view.clone();
+        let t = Rc::clone(tabs);
+        let c = Rc::clone(config);
+        settings_btn.connect_clicked(move |_| {
+            new_settings_tab(&tv, &t, &c);
+        });
+    }
+
+    sidebar
 }
 
 /// Append a new terminal tab containing a fresh [`SplitContainer`]
