@@ -24,6 +24,14 @@ use gtk4::glib;
 
 use crate::daemon_client;
 
+/// Message type for the streaming channel between the daemon
+/// worker thread and the GTK main thread.
+#[derive(Debug)]
+enum StreamMsg {
+    Delta(String),
+    Done(Result<String, String>),
+}
+
 /// A single turn of conversation.
 #[derive(Debug, Clone)]
 struct ChatMessage {
@@ -255,11 +263,19 @@ impl ChatView {
         self.send_prompt(trimmed);
     }
 
-    /// Send an arbitrary user prompt (from the entry or from
-    /// [`explain_terminal`](Self::explain_terminal)) through the
-    /// daemon and update the chat list with the reply. Worker
-    /// thread + async-channel pattern keeps the GTK main loop
-    /// responsive during the multi-second Anthropic roundtrip.
+    /// Send an arbitrary user prompt through the daemon with
+    /// streaming — tokens appear in the chat as they arrive from
+    /// Claude instead of waiting for the full response.
+    ///
+    /// Architecture: a worker `std::thread` calls
+    /// `daemon_client::call_streaming` which reads JSON-RPC
+    /// notifications (`chat.delta`) and forwards each text chunk
+    /// via an `async_channel`. A `glib::MainContext::spawn_local`
+    /// future drains the channel on the GTK main thread and
+    /// appends each chunk to a growing assistant label. When the
+    /// final response arrives the worker sends a `Done` sentinel
+    /// so the main thread knows to finalize the message row
+    /// (parse code blocks, add buttons, update history).
     fn send_prompt(self: &Rc<Self>, prompt: &str) {
         if self.pending.get() {
             return;
@@ -268,8 +284,6 @@ impl ChatView {
         self.append_message(Role::User, prompt);
         self.set_pending(true);
 
-        // Snapshot history for the worker. It gets sent verbatim
-        // to the daemon so Claude has the full conversation.
         let history_snapshot: Vec<serde_json::Value> = self
             .history
             .borrow()
@@ -282,13 +296,20 @@ impl ChatView {
             })
             .collect();
 
-        let (tx, rx) = async_channel::bounded::<Result<String, String>>(1);
+        let (tx, rx) = async_channel::unbounded::<StreamMsg>();
 
-        // Worker thread: blocking daemon call. Keeps the GTK main
-        // loop responsive.
+        // Worker thread: blocking streaming call.
         std::thread::spawn(move || {
             let params = serde_json::json!({ "messages": history_snapshot });
-            let result = match daemon_client::call_one_shot("chat.send", &params) {
+            let tx_delta = tx.clone();
+            let result = daemon_client::call_streaming(
+                "chat.send",
+                &params,
+                &|text: &str| {
+                    let _ = tx_delta.send_blocking(StreamMsg::Delta(text.to_string()));
+                },
+            );
+            let final_msg = match result {
                 Ok(value) => value
                     .get("content")
                     .and_then(|v| v.as_str())
@@ -296,29 +317,73 @@ impl ChatView {
                     .ok_or_else(|| "daemon returned no content field".to_string()),
                 Err(err) => Err(err.to_string()),
             };
-            let _ = tx.send_blocking(result);
+            let _ = tx.send_blocking(StreamMsg::Done(final_msg));
         });
 
-        // Main-thread waiter: consume the async-channel result and
-        // update the UI. `spawn_local` runs on the GTK main context
-        // so all widget mutation stays on the main thread.
+        // Create a placeholder assistant row with an empty label
+        // that we'll append to as deltas arrive.
+        let streaming_label = gtk4::Label::builder()
+            .label("")
+            .halign(gtk4::Align::Start)
+            .wrap(true)
+            .wrap_mode(gtk4::pango::WrapMode::WordChar)
+            .selectable(true)
+            .xalign(0.0)
+            .build();
+
+        let who = gtk4::Label::builder()
+            .label(Role::Assistant.label())
+            .halign(gtk4::Align::Start)
+            .css_classes(["caption", "dim-label"])
+            .build();
+
+        let placeholder_box = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Vertical)
+            .spacing(4)
+            .margin_top(8)
+            .margin_bottom(8)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        placeholder_box.append(&who);
+        placeholder_box.append(&streaming_label);
+
+        let placeholder_row = gtk4::ListBoxRow::builder()
+            .selectable(false)
+            .activatable(false)
+            .child(&placeholder_box)
+            .build();
+        self.message_list.append(&placeholder_row);
+        self.scroll_to_bottom();
+
+        // Main-thread consumer: drain deltas into the label, then
+        // finalize on Done.
         let view_clone = Rc::clone(self);
+        let mut accumulated = String::new();
         glib::MainContext::default().spawn_local(async move {
-            match rx.recv().await {
-                Ok(Ok(content)) => {
-                    view_clone.append_message(Role::Assistant, &content);
-                }
-                Ok(Err(err)) => {
-                    view_clone.append_message(
-                        Role::Assistant,
-                        &format!("⚠️  chat.send failed: {err}"),
-                    );
-                }
-                Err(err) => {
-                    eprintln!("[mugenkai] chat worker channel dropped: {err}");
+            while let Ok(msg) = rx.recv().await {
+                match msg {
+                    StreamMsg::Delta(text) => {
+                        accumulated.push_str(&text);
+                        streaming_label.set_text(&accumulated);
+                        view_clone.scroll_to_bottom();
+                    }
+                    StreamMsg::Done(result) => {
+                        // Remove the placeholder row and replace
+                        // with a properly built message row that
+                        // has code-block parsing + Run↗ buttons.
+                        view_clone.message_list.remove(&placeholder_row);
+
+                        let content = match result {
+                            Ok(c) => c,
+                            Err(err) => format!("chat.send failed: {err}"),
+                        };
+                        view_clone.append_message(Role::Assistant, &content);
+                        view_clone.set_pending(false);
+                        break;
+                    }
                 }
             }
-            view_clone.set_pending(false);
         });
     }
 

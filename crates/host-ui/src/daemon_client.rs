@@ -183,6 +183,7 @@ impl DaemonClient {
 /// - Any other I/O error from the socket operations
 /// - `io::Error` of kind `Other` if the daemon returned a
 ///   JSON-RPC error envelope
+#[allow(dead_code)]
 pub fn call_one_shot(
     method: &str,
     params: &serde_json::Value,
@@ -216,6 +217,71 @@ pub fn call_one_shot(
         .get("result")
         .cloned()
         .ok_or_else(|| io::Error::other("daemon response missing result"))
+}
+
+/// Streaming variant of [`call_one_shot`]. Sends the request,
+/// then reads lines until it sees a response (has `id`). Any
+/// line without `id` is treated as a notification — if the
+/// `method` field is `"chat.delta"`, the `params.text` value is
+/// sent through `on_delta`.
+///
+/// Used by the chat pane so tokens appear as they arrive from
+/// Claude instead of waiting for the full response.
+pub fn call_streaming(
+    method: &str,
+    params: &serde_json::Value,
+    on_delta: &dyn Fn(&str),
+) -> io::Result<serde_json::Value> {
+    let path = daemon_socket_path();
+    let stream = UnixStream::connect(&path)?;
+    let mut writer = stream.try_clone()?;
+    let mut reader = BufReader::new(stream);
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params.clone(),
+    });
+    let mut line = serde_json::to_string(&request)
+        .map_err(|err| io::Error::other(format!("encode request: {err}")))?;
+    line.push('\n');
+    writer.write_all(line.as_bytes())?;
+    writer.flush()?;
+
+    // Read lines until we get a response (object with "id" field).
+    // Notifications (chat.delta) arrive first with no id.
+    loop {
+        let mut response_line = String::new();
+        let n = reader.read_line(&mut response_line)?;
+        if n == 0 {
+            return Err(io::Error::other("daemon closed connection before response"));
+        }
+        let msg: serde_json::Value = serde_json::from_str(response_line.trim_end())
+            .map_err(|err| io::Error::other(format!("parse line: {err}")))?;
+
+        // Notification (no id) — check for chat.delta.
+        if msg.get("id").is_none() || msg["id"].is_null() {
+            if msg.get("method").and_then(|m| m.as_str()) == Some("chat.delta")
+                && let Some(text) = msg
+                    .get("params")
+                    .and_then(|p| p.get("text"))
+                    .and_then(|t| t.as_str())
+            {
+                on_delta(text);
+            }
+            continue;
+        }
+
+        // Response (has id) — this is the final message.
+        if let Some(error) = msg.get("error") {
+            return Err(io::Error::other(format!("daemon error: {error}")));
+        }
+        return msg
+            .get("result")
+            .cloned()
+            .ok_or_else(|| io::Error::other("daemon response missing result"));
+    }
 }
 
 /// Resolve the Unix socket path the daemon listens on — matches

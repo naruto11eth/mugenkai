@@ -1,14 +1,10 @@
 // Mugenkaid entry point: a Unix-socket JSON-RPC 2.0 server.
 //
-// Phase 1: accepts connections on the configured socket path
-// and responds to a single handshake method (`ping` → "pong"),
-// plus `version` → the daemon version. Everything else returns
-// METHOD_NOT_FOUND. Phase 3 adds real skill dispatch.
-//
-// Frames are newline-delimited JSON. One client → one request →
-// one response. No streaming, no batching — keeping the wire
-// format simple so the Rust client can be built on `BufReader`
-// + `writeln!` with no framing library.
+// Frames are newline-delimited JSON. The daemon supports streaming
+// for chat.send: text deltas arrive as JSON-RPC notifications
+// (no id) with method "chat.delta", followed by the final response
+// with the full content. Non-streaming methods return a single
+// response.
 
 import { createServer, type Socket } from "node:net";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
@@ -26,7 +22,12 @@ import {
 
 const VERSION = "0.1.0-dev";
 
-async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse> {
+// ─── request dispatch ────────────────────────────────────
+
+async function handleRequest(
+  req: JsonRpcRequest,
+  socket: Socket,
+): Promise<JsonRpcResponse> {
   switch (req.method) {
     case "ping":
       return { jsonrpc: "2.0", id: req.id, result: "pong" };
@@ -37,7 +38,7 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse> {
         result: { daemon: VERSION, protocol: PROTOCOL_VERSION },
       };
     case "chat.send":
-      return await handleChatSend(req);
+      return await handleChatSend(req, socket);
     default:
       return {
         jsonrpc: "2.0",
@@ -50,6 +51,8 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse> {
   }
 }
 
+// ─── chat.send with streaming ────────────────────────────
+
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -61,13 +64,10 @@ interface ChatSendParams {
   system?: string;
 }
 
-/// Call Anthropic's /v1/messages endpoint and return the first
-/// assistant text block.
-///
-/// The daemon picks up `ANTHROPIC_API_KEY` from its environment.
-/// Host-ui spawns it with inherit-parent-env, so whatever shell
-/// launched mugenkai sets the key.
-async function handleChatSend(req: JsonRpcRequest): Promise<JsonRpcResponse> {
+async function handleChatSend(
+  req: JsonRpcRequest,
+  socket: Socket,
+): Promise<JsonRpcResponse> {
   const apiKey = process.env["ANTHROPIC_API_KEY"];
   if (!apiKey) {
     return {
@@ -93,6 +93,7 @@ async function handleChatSend(req: JsonRpcRequest): Promise<JsonRpcResponse> {
   const body = {
     model,
     max_tokens: 2048,
+    stream: true,
     system:
       params.system ??
       "You are a helpful assistant embedded in mugenkai, a Linux terminal emulator. Keep responses terse and actionable — the user is a developer at a shell prompt.",
@@ -121,15 +122,73 @@ async function handleChatSend(req: JsonRpcRequest): Promise<JsonRpcResponse> {
         },
       };
     }
-    const payload = (await resp.json()) as {
-      content?: Array<{ type: string; text?: string }>;
-    };
-    const text =
-      payload.content
-        ?.filter((block) => block.type === "text" && typeof block.text === "string")
-        .map((block) => block.text)
-        .join("\n") ?? "";
-    return { jsonrpc: "2.0", id: req.id, result: { content: text } };
+
+    // Stream SSE events from Anthropic. Each content_block_delta
+    // with type "text_delta" contains a chunk of the response.
+    // We forward each chunk as a JSON-RPC notification so the
+    // host can update the UI token-by-token.
+    const fullContent: string[] = [];
+    const reader = resp.body?.getReader();
+    if (!reader) {
+      return {
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32003, message: "no readable stream from anthropic" },
+      };
+    }
+
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+
+      // SSE events are separated by double newlines. Each event
+      // has "event: <type>\ndata: <json>\n\n" format.
+      const events = sseBuffer.split("\n\n");
+      // Keep the last (possibly incomplete) chunk in the buffer.
+      sseBuffer = events.pop() ?? "";
+
+      for (const event of events) {
+        const dataLine = event
+          .split("\n")
+          .find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+        const json = dataLine.slice("data: ".length);
+        if (json === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(json) as {
+            type?: string;
+            delta?: { type?: string; text?: string };
+          };
+          if (
+            parsed.type === "content_block_delta" &&
+            parsed.delta?.type === "text_delta" &&
+            typeof parsed.delta.text === "string"
+          ) {
+            const text = parsed.delta.text;
+            fullContent.push(text);
+
+            // Push delta notification to the host — no id means
+            // it's a notification per JSON-RPC 2.0.
+            const notification = JSON.stringify({
+              jsonrpc: "2.0",
+              method: "chat.delta",
+              params: { text },
+            });
+            socket.write(notification + "\n");
+          }
+        } catch {
+          // Malformed SSE chunk — skip.
+        }
+      }
+    }
+
+    const content = fullContent.join("");
+    return { jsonrpc: "2.0", id: req.id, result: { content } };
   } catch (err) {
     return {
       jsonrpc: "2.0",
@@ -142,7 +201,12 @@ async function handleChatSend(req: JsonRpcRequest): Promise<JsonRpcResponse> {
   }
 }
 
-async function parseAndDispatch(line: string): Promise<JsonRpcResponse | null> {
+// ─── connection handler ──────────────────────────────────
+
+async function parseAndDispatch(
+  line: string,
+  socket: Socket,
+): Promise<JsonRpcResponse | null> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -165,9 +229,8 @@ async function parseAndDispatch(line: string): Promise<JsonRpcResponse | null> {
     };
   }
   const req = parsed as JsonRpcRequest;
-  // Notifications (no id) get no response.
   if (req.id === undefined) return null;
-  return await handleRequest(req);
+  return await handleRequest(req, socket);
 }
 
 function handleConnection(socket: Socket) {
@@ -179,10 +242,7 @@ function handleConnection(socket: Socket) {
       const line = buffer.slice(0, newlineIdx);
       buffer = buffer.slice(newlineIdx + 1);
       if (line.length > 0) {
-        // Fire the async handler and write its response when
-        // ready. Connections stay open while requests are in
-        // flight — Anthropic API calls can take several seconds.
-        void parseAndDispatch(line).then((response) => {
+        void parseAndDispatch(line, socket).then((response) => {
           if (response !== null) {
             socket.write(JSON.stringify(response) + "\n");
           }
@@ -196,11 +256,12 @@ function handleConnection(socket: Socket) {
   });
 }
 
+// ─── main ────────────────────────────────────────────────
+
 function main() {
   const path = defaultSocketPath();
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  // Stale socket from a previous run blocks `bind` with EADDRINUSE.
   if (existsSync(path)) unlinkSync(path);
 
   const server = createServer(handleConnection);
@@ -212,8 +273,6 @@ function main() {
     process.exit(1);
   });
 
-  // Clean up on shutdown so the next run doesn't trip on a stale
-  // socket if we crashed before the pre-listen unlink.
   const shutdown = () => {
     try {
       server.close();
