@@ -794,7 +794,15 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     // underline), then translate to pango markup and push into the
     // label. set_markup crashes on invalid markup, so fall back to
     // set_text with plain format on parse errors.
-    let html = match Formatter::new(&state.terminal, OutputFormat::Html, true) {
+    // trim: false so the formatter emits every row of the visible
+    // grid, including trailing blank ones. Trimming trailing empties
+    // looks cleaner for plain shell output but breaks cursor
+    // placement inside TUIs (claude-code, vim modal panels) where
+    // the cursor row sits on a logically-blank line that trim would
+    // drop — splice_cursor then can't walk newlines to the right
+    // row and falls through to "past all content" padding, which
+    // ends up drawing the cursor below the visible viewport.
+    let html = match Formatter::new(&state.terminal, OutputFormat::Html, false) {
         Ok(formatter) => formatter.format(),
         Err(err) => Err(err),
     };
