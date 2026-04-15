@@ -260,8 +260,8 @@ impl SplitContainer {
     ///    so only the focused pane renders its cursor. Without
     ///    this, every pane would splice its own cursor and a
     ///    split layout would show phantom cursors everywhere.
-    /// 2. CSS classes `.mugenkai-pane-focused` /
-    ///    `.mugenkai-pane-unfocused` toggle so the focus ring
+    /// 2. CSS classes `.mg-pane-focused` /
+    ///    `.mg-pane-unfocused` toggle so the focus ring
     ///    follows the keyboard focus visually.
     ///
     /// Called from [`rematerialize`](Self::rematerialize) after
@@ -276,11 +276,11 @@ impl SplitContainer {
             if ring_on {
                 let widget = pane.widget();
                 if is_focused {
-                    widget.remove_css_class("mugenkai-pane-unfocused");
-                    widget.add_css_class("mugenkai-pane-focused");
+                    widget.remove_css_class("mg-pane-unfocused");
+                    widget.add_css_class("mg-pane-focused");
                 } else {
-                    widget.remove_css_class("mugenkai-pane-focused");
-                    widget.add_css_class("mugenkai-pane-unfocused");
+                    widget.remove_css_class("mg-pane-focused");
+                    widget.add_css_class("mg-pane-unfocused");
                 }
             }
         }

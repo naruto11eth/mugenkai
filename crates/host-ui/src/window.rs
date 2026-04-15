@@ -66,7 +66,7 @@ impl MugenkaiWindow {
     /// Build a window using the user's configuration.
     #[must_use]
     pub fn with_config(app: &adw::Application, config: &Rc<MugenkaiConfig>) -> Self {
-        css::install_for_default_display(&config.pane.focus_ring_color);
+        css::install_design_system(&config.theme, &config.pane.focus_ring_color);
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
