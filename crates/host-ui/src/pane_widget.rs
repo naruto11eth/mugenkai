@@ -45,8 +45,8 @@ use gtk4::pango;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use host_ghostty::{
-    EffectsHandle, Formatter, MouseAction, MouseButton, MouseEncoder, OutputFormat, Terminal,
-    TerminalEvent,
+    CursorPosition, EffectsHandle, Formatter, MouseAction, MouseButton, MouseEncoder, OutputFormat,
+    Terminal, TerminalEvent,
 };
 use host_pty::{Child, SpawnOptions, Winsize};
 
@@ -130,6 +130,11 @@ struct PaneState {
     /// use ANSI codes) still render in their own colors while
     /// plain output picks up the theme's terminal-fg.
     terminal_fg: String,
+    /// Emit per-refresh cursor diagnostics to stderr when
+    /// `MUGENKAI_DEBUG_CURSOR=1` was set at process start. Gated
+    /// at `PaneState` construction so the env var only needs to be
+    /// checked once and the hot render loop stays branch-cheap.
+    debug_cursor: bool,
 }
 
 impl Drop for PaneState {
@@ -349,6 +354,8 @@ impl PaneWidget {
             mouse_encoder,
             font_desc_str,
             terminal_fg: terminal_fg.to_string(),
+            debug_cursor: std::env::var("MUGENKAI_DEBUG_CURSOR")
+                .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
         }));
 
         let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
@@ -794,15 +801,13 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     // underline), then translate to pango markup and push into the
     // label. set_markup crashes on invalid markup, so fall back to
     // set_text with plain format on parse errors.
-    // trim: false so the formatter emits every row of the visible
-    // grid, including trailing blank ones. Trimming trailing empties
-    // looks cleaner for plain shell output but breaks cursor
-    // placement inside TUIs (claude-code, vim modal panels) where
-    // the cursor row sits on a logically-blank line that trim would
-    // drop — splice_cursor then can't walk newlines to the right
-    // row and falls through to "past all content" padding, which
-    // ends up drawing the cursor below the visible viewport.
-    let html = match Formatter::new(&state.terminal, OutputFormat::Html, false) {
+    // `trim` is a libghostty-vt hint only: even with trim=false
+    // the formatter still stops emitting rows after the last
+    // non-blank line (see regression test
+    // `formatter_trim_false_emits_full_grid`). We normalise the
+    // markup to the full grid ourselves below so splice_cursor
+    // can always walk newlines to the cursor's row.
+    let html = match Formatter::new(&state.terminal, OutputFormat::Html, true) {
         Ok(formatter) => formatter.format(),
         Err(err) => Err(err),
     };
@@ -812,6 +817,28 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     match html {
         Ok(html) => {
             let mut markup = html_to_pango_markup(&html);
+            // Pad the markup up to the terminal's row count so
+            // splice_cursor can always locate the cursor row by
+            // walking newlines inline. libghostty-vt's formatter
+            // only emits rows with content even when `trim=false`
+            // (confirmed by `formatter_trim_false_emits_full_grid`
+            // regression test in host-ghostty) — so without this
+            // pad, a cursor that lands on a logically-blank row
+            // below the last non-blank one falls into
+            // splice_cursor's "past all content" path and the
+            // cursor ends up rendered below the viewport. That's
+            // the exact symptom users hit inside `claude -c` and
+            // after its ungraceful exit: no cursor until `clear`
+            // brings the grid back to something the formatter
+            // emits in full.
+            let emitted_rows = markup.matches('\n').count() + 1;
+            let target_rows = state.last_rows as usize;
+            if emitted_rows < target_rows {
+                markup.reserve(target_rows - emitted_rows);
+                for _ in emitted_rows..target_rows {
+                    markup.push('\n');
+                }
+            }
             // Splice the configured cursor at the terminal's
             // current position. Must run after the HTML → pango
             // translation because splice_cursor walks pango tags,
@@ -852,6 +879,9 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
             // invisible.
             let _ = cursor.visible;
             if state.focused && state.cursor_blink_on {
+                if state.debug_cursor {
+                    debug_log_cursor(state, cursor, &markup);
+                }
                 markup = splice_cursor(
                     &markup,
                     cursor.row as usize,
@@ -884,6 +914,102 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
     // available range.
     if let Some((start, end)) = saved_selection {
         screen_label.select_region(start, end);
+    }
+}
+
+/// Emit a one-line stderr record describing the current cursor
+/// state + the pango markup around the targeted row. Enabled per
+/// pane via the `MUGENKAI_DEBUG_CURSOR=1` env var — kept behind
+/// that gate because every refresh tick would otherwise spam the
+/// logs at ~30Hz.
+///
+/// Fields logged (space-separated `k=v` pairs):
+/// - `grid` — pane's last-applied `cols × rows`
+/// - `cur` — `(col, row)` from `ghostty_terminal_get`
+/// - `vis_bit` — the DEC mode 25 bit ghostty reports (we ignore
+///   it for rendering but log it for correlation)
+/// - `alt` — whether the terminal is on the alternate screen
+/// - `row_chars` — rendered-character count on the cursor row
+/// - `row_preview` — up to 80 chars of plain text from that row
+fn debug_log_cursor(state: &PaneState, cursor: CursorPosition, markup: &str) {
+    let (row_chars, row_preview) = markup_row_preview(markup, cursor.row as usize);
+    eprintln!(
+        "[mg-cursor] grid={}x{} cur=({},{}) vis_bit={} alt={} blink_on={} row_chars={} row=\"{}\"",
+        state.last_cols,
+        state.last_rows,
+        cursor.col,
+        cursor.row,
+        cursor.visible,
+        state.terminal.on_alt_screen(),
+        state.cursor_blink_on,
+        row_chars,
+        row_preview,
+    );
+}
+
+/// Extract a plain-text preview of row `target_row` from pango
+/// markup, skipping `<...>` tag content. Also returns the total
+/// rendered-character count on that row so the caller can tell
+/// whether the cursor's column is past the row's content.
+///
+/// Public for unit testing inside this crate.
+pub(crate) fn markup_row_preview(markup: &str, target_row: usize) -> (usize, String) {
+    let mut row: usize = 0;
+    let mut in_tag = false;
+    let mut count: usize = 0;
+    let mut preview = String::new();
+    let mut chars = markup.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_tag {
+            if ch == '>' {
+                in_tag = false;
+            }
+            continue;
+        }
+        if ch == '<' {
+            in_tag = true;
+            continue;
+        }
+        if ch == '\n' {
+            if row == target_row {
+                return (count, preview);
+            }
+            row += 1;
+            count = 0;
+            preview.clear();
+            continue;
+        }
+        if ch == '&' {
+            // Collapse `&lt;` `&gt;` `&amp;` into a single logical
+            // char. Any unknown entity still consumes one char.
+            let mut entity = String::from("&");
+            while let Some(&peek) = chars.peek() {
+                entity.push(peek);
+                chars.next();
+                if peek == ';' {
+                    break;
+                }
+            }
+            if row == target_row {
+                count += 1;
+                if preview.len() < 80 {
+                    preview.push_str(&entity);
+                }
+            }
+            continue;
+        }
+        if row == target_row {
+            count += 1;
+            if preview.len() < 80 {
+                preview.push(ch);
+            }
+        }
+    }
+    // Reached EOF: caller may be asking about a row past the end.
+    if row == target_row {
+        (count, preview)
+    } else {
+        (0, String::new())
     }
 }
 
@@ -1194,4 +1320,58 @@ async fn worker_main(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::markup_row_preview;
+
+    #[test]
+    fn markup_row_preview_counts_visible_chars() {
+        let markup = "<span foreground=\"#f00\">hello</span>\n<span>world</span>";
+        let (count, preview) = markup_row_preview(markup, 0);
+        assert_eq!(count, 5);
+        assert_eq!(preview, "hello");
+    }
+
+    #[test]
+    fn markup_row_preview_second_row() {
+        let markup = "one\ntwo\nthree";
+        let (count, preview) = markup_row_preview(markup, 1);
+        assert_eq!(count, 3);
+        assert_eq!(preview, "two");
+    }
+
+    #[test]
+    fn markup_row_preview_skips_tag_content() {
+        let markup = "<span foreground=\"#abc\">ab</span>cd";
+        let (count, _) = markup_row_preview(markup, 0);
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn markup_row_preview_counts_entity_as_one_char() {
+        let markup = "a&lt;b";
+        let (count, _) = markup_row_preview(markup, 0);
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn markup_row_preview_row_past_end_is_empty() {
+        let markup = "one\ntwo";
+        let (count, preview) = markup_row_preview(markup, 50);
+        assert_eq!(count, 0);
+        assert_eq!(preview, "");
+    }
+
+    #[test]
+    fn markup_row_preview_caps_preview_at_80_chars() {
+        let long_row: String = "x".repeat(200);
+        let (count, preview) = markup_row_preview(&long_row, 0);
+        assert_eq!(count, 200, "count reflects full row length");
+        assert!(
+            preview.len() <= 80,
+            "preview stays bounded so log lines don't explode"
+        );
+    }
 }
