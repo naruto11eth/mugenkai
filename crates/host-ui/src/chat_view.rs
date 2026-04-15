@@ -80,30 +80,37 @@ pub type SendToTerminal = Box<dyn Fn(&str) -> bool + 'static>;
 /// so it can be resent to the daemon on every follow-up, and a
 /// `pending` flag that disables the send button while a request
 /// is in flight so users can't queue up parallel requests.
+/// One image attachment pending on the input: base64-encoded PNG
+/// bytes plus the thumbnail box so we can remove it from the UI
+/// when the user clicks ✕ or when the message is sent.
+struct PendingAttachment {
+    base64: String,
+    thumbnail: gtk4::Box,
+}
+
 pub struct ChatView {
     root: gtk4::Box,
     message_list: gtk4::ListBox,
     input_entry: gtk4::Entry,
     send_button: gtk4::Button,
     scroller: gtk4::ScrolledWindow,
-    // Wraps the inner box so the Run↗ button can surface a
-    // transient "no terminal open" toast when there's nothing
-    // to paste to, without injecting a fake system message into
-    // the chat history.
     toast_overlay: adw::ToastOverlay,
     history: RefCell<Vec<ChatMessage>>,
     pending: Cell<bool>,
-    // Set by `window.rs` when the chat tab is installed. When
-    // present, assistant replies that contain fenced code blocks
-    // get a "Run ↗" button per block that pipes the block's
-    // contents into the focused terminal pane.
     send_to_terminal: RefCell<Option<SendToTerminal>>,
+    /// Horizontal strip of thumbnail widgets shown above the
+    /// entry for each pending image attachment.
+    attachments_row: gtk4::Box,
+    /// Base64 PNG data for every image currently staged on the
+    /// input. Cleared when a message is sent successfully.
+    attachments: RefCell<Vec<PendingAttachment>>,
 }
 
 impl ChatView {
     /// Build a new chat view. Wire the send button + entry-activate
     /// signals in the caller because they capture an `Rc<Self>`.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn new() -> Rc<Self> {
         let message_list = gtk4::ListBox::builder()
             .selection_mode(gtk4::SelectionMode::None)
@@ -132,6 +139,15 @@ impl ChatView {
             .css_classes(["suggested-action"])
             .build();
 
+        let attachments_row = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(4)
+            .visible(false)
+            .build();
+
         let input_row = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Horizontal)
             .spacing(8)
@@ -149,6 +165,7 @@ impl ChatView {
             .vexpand(true)
             .build();
         inner.append(&scroller);
+        inner.append(&attachments_row);
         inner.append(&input_row);
 
         let toast_overlay = adw::ToastOverlay::new();
@@ -171,6 +188,8 @@ impl ChatView {
             history: RefCell::new(Vec::new()),
             pending: Cell::new(false),
             send_to_terminal: RefCell::new(None),
+            attachments_row,
+            attachments: RefCell::new(Vec::new()),
         });
 
         view.install_welcome();
@@ -188,6 +207,28 @@ impl ChatView {
             view.input_entry.connect_activate(move |_| {
                 view_clone.submit();
             });
+        }
+
+        // Ctrl+Shift+V on the input pastes image data from the
+        // system clipboard as an attachment. Plain text paste
+        // (Ctrl+V) still works via GtkEntry's built-in handler.
+        {
+            let view_clone = Rc::clone(&view);
+            let key_controller = gtk4::EventControllerKey::new();
+            key_controller.connect_key_pressed(move |_, keyval, _, modifiers| {
+                let ctrl = modifiers.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
+                let shift = modifiers.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
+                if ctrl
+                    && shift
+                    && let Some(ch) = keyval.to_unicode()
+                    && (ch == 'v' || ch == 'V')
+                {
+                    view_clone.try_paste_image_from_clipboard();
+                    return gtk4::glib::Propagation::Stop;
+                }
+                gtk4::glib::Propagation::Proceed
+            });
+            view.input_entry.add_controller(key_controller);
         }
 
         view
@@ -258,6 +299,98 @@ impl ChatView {
         self.toast_overlay.add_toast(toast);
     }
 
+    /// Try to read an image from the system clipboard and stage
+    /// it as a pending attachment. No-op if clipboard has no
+    /// image data.
+    fn try_paste_image_from_clipboard(self: &Rc<Self>) {
+        let Some(display) = gtk4::gdk::Display::default() else {
+            return;
+        };
+        let clipboard = display.clipboard();
+        let view_clone = Rc::clone(self);
+        clipboard.read_texture_async(None::<&gtk4::gio::Cancellable>, move |result| {
+            if let Ok(Some(texture)) = result {
+                let bytes = texture.save_to_png_bytes();
+                let b64 = base64_encode_png(&bytes);
+                view_clone.add_attachment(b64);
+            } else {
+                view_clone.toast("Clipboard has no image");
+            }
+        });
+    }
+
+    /// Append a base64-encoded PNG attachment + a thumbnail
+    /// widget above the input with an ✕ remove button.
+    fn add_attachment(self: &Rc<Self>, base64: String) {
+        let Ok(bytes_for_preview) = base64_decode(&base64) else {
+            return;
+        };
+        let glib_bytes = gtk4::glib::Bytes::from_owned(bytes_for_preview);
+        let Ok(texture) = gtk4::gdk::Texture::from_bytes(&glib_bytes) else {
+            return;
+        };
+
+        let thumb = gtk4::Picture::for_paintable(&texture);
+        thumb.set_content_fit(gtk4::ContentFit::Cover);
+        thumb.set_size_request(60, 60);
+
+        let remove_btn = gtk4::Button::builder()
+            .label("✕")
+            .css_classes(["mg-btn-ghost", "mg-btn-pill"])
+            .halign(gtk4::Align::End)
+            .valign(gtk4::Align::Start)
+            .build();
+
+        let wrapper = gtk4::Overlay::builder()
+            .width_request(60)
+            .height_request(60)
+            .build();
+        wrapper.set_child(Some(&thumb));
+        wrapper.add_overlay(&remove_btn);
+
+        let thumb_box = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Vertical)
+            .build();
+        thumb_box.append(&wrapper);
+
+        self.attachments_row.append(&thumb_box);
+        self.attachments_row.set_visible(true);
+
+        let thumb_box_clone = thumb_box.clone();
+        let view_clone = Rc::clone(self);
+        let base64_clone = base64.clone();
+        remove_btn.connect_clicked(move |_| {
+            view_clone.remove_attachment(&base64_clone, &thumb_box_clone);
+        });
+
+        self.attachments.borrow_mut().push(PendingAttachment {
+            base64,
+            thumbnail: thumb_box,
+        });
+    }
+
+    fn remove_attachment(&self, base64: &str, thumb_box: &gtk4::Box) {
+        self.attachments_row.remove(thumb_box);
+        self.attachments.borrow_mut().retain(|a| a.base64 != base64);
+        if self.attachments.borrow().is_empty() {
+            self.attachments_row.set_visible(false);
+        }
+    }
+
+    fn clear_attachments(&self) {
+        let thumbs: Vec<gtk4::Box> = self
+            .attachments
+            .borrow()
+            .iter()
+            .map(|a| a.thumbnail.clone())
+            .collect();
+        for t in thumbs {
+            self.attachments_row.remove(&t);
+        }
+        self.attachments.borrow_mut().clear();
+        self.attachments_row.set_visible(false);
+    }
+
     fn install_welcome(self: &Rc<Self>) {
         let row = self.build_message_row(
             Role::Assistant,
@@ -297,6 +430,7 @@ impl ChatView {
     /// final response arrives the worker sends a `Done` sentinel
     /// so the main thread knows to finalize the message row
     /// (parse code blocks, add buttons, update history).
+    #[allow(clippy::too_many_lines)]
     fn send_prompt(self: &Rc<Self>, prompt: &str) {
         if self.pending.get() {
             return;
@@ -305,15 +439,52 @@ impl ChatView {
         self.append_message(Role::User, prompt);
         self.set_pending(true);
 
+        // Drain pending image attachments into the last (user)
+        // message's content as Anthropic-format blocks. Clear
+        // the UI row afterwards so the next prompt starts empty.
+        let attachment_blocks: Vec<serde_json::Value> = self
+            .attachments
+            .borrow()
+            .iter()
+            .map(|att| {
+                serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": att.base64,
+                    },
+                })
+            })
+            .collect();
+        self.clear_attachments();
+
+        let history_len = self.history.borrow().len();
         let history_snapshot: Vec<serde_json::Value> = self
             .history
             .borrow()
             .iter()
-            .map(|msg| {
-                serde_json::json!({
-                    "role": msg.role.as_str(),
-                    "content": msg.content,
-                })
+            .enumerate()
+            .map(|(idx, msg)| {
+                let is_last_user =
+                    idx + 1 == history_len && msg.role == Role::User && !attachment_blocks.is_empty();
+                if is_last_user {
+                    // Mixed content: text + image blocks.
+                    let mut blocks = vec![serde_json::json!({
+                        "type": "text",
+                        "text": msg.content,
+                    })];
+                    blocks.extend(attachment_blocks.iter().cloned());
+                    serde_json::json!({
+                        "role": msg.role.as_str(),
+                        "content": blocks,
+                    })
+                } else {
+                    serde_json::json!({
+                        "role": msg.role.as_str(),
+                        "content": msg.content,
+                    })
+                }
             })
             .collect();
 
@@ -631,6 +802,19 @@ fn split_fenced_blocks(content: &str) -> Vec<Segment> {
         out.push(Segment::Prose(rest.to_string()));
     }
     out
+}
+
+/// Encode a slice of PNG bytes to a base64 string (standard
+/// alphabet, with padding) — Anthropic's API expects this
+/// format for image content blocks.
+fn base64_encode_png(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(s)
 }
 
 #[cfg(test)]
