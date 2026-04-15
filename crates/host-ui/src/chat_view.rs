@@ -315,9 +315,12 @@ impl ChatView {
             return;
         };
 
-        let thumb = gtk4::Picture::for_paintable(&texture);
-        thumb.set_content_fit(gtk4::ContentFit::Cover);
-        thumb.set_size_request(60, 60);
+        // `gtk4::Image::from_paintable` scales to the pixel size
+        // we set — unlike `Picture` which expands to fill.
+        let thumb = gtk4::Image::from_paintable(Some(&texture));
+        thumb.set_pixel_size(56);
+        thumb.set_halign(gtk4::Align::Start);
+        thumb.set_valign(gtk4::Align::Start);
 
         let remove_btn = gtk4::Button::builder()
             .label("✕")
@@ -327,14 +330,19 @@ impl ChatView {
             .build();
 
         let wrapper = gtk4::Overlay::builder()
-            .width_request(60)
-            .height_request(60)
+            .halign(gtk4::Align::Start)
+            .valign(gtk4::Align::Start)
+            .hexpand(false)
+            .vexpand(false)
             .build();
         wrapper.set_child(Some(&thumb));
         wrapper.add_overlay(&remove_btn);
 
         let thumb_box = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
+            .halign(gtk4::Align::Start)
+            .hexpand(false)
+            .vexpand(false)
             .build();
         thumb_box.append(&wrapper);
 

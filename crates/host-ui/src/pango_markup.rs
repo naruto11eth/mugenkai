@@ -271,6 +271,43 @@ pub fn html_to_pango_markup(html: &str) -> String {
 
     // Trailing plain text.
     out.push_str(remaining);
+    // Final pass: strip any stray `<div...>` / `</div>` tokens
+    // that survived the translation. Pango markup only knows
+    // `<span>` and a few typography tags, so any `<div>` left
+    // over would blow up `set_markup` with a parse error. We've
+    // already converted all the semantically-meaningful div
+    // runs above; anything remaining is noise.
+    strip_div_tags(&out)
+}
+
+/// Remove all `<div ...>` / `</div>` tokens from a string. Preserves
+/// everything else (including unrelated `<` characters that appear
+/// as part of escaped entities like `&lt;`).
+fn strip_div_tags(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(lt_idx) = rest.find('<') {
+        out.push_str(&rest[..lt_idx]);
+        let after_lt = &rest[lt_idx + 1..];
+        let is_div_open = after_lt.starts_with("div ")
+            || after_lt.starts_with("div>")
+            || after_lt.starts_with("div/");
+        let is_div_close = after_lt.starts_with("/div>");
+        if is_div_open || is_div_close {
+            // Swallow tag up to and including the next `>`.
+            if let Some(gt_idx) = after_lt.find('>') {
+                rest = &after_lt[gt_idx + 1..];
+                continue;
+            }
+            // Malformed, no closing `>`: drop the rest so we
+            // don't emit garbage.
+            return out;
+        }
+        // Not a div tag — preserve the `<` and keep scanning.
+        out.push('<');
+        rest = after_lt;
+    }
+    out.push_str(rest);
     out
 }
 
