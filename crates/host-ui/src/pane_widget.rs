@@ -794,7 +794,19 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
             // Unfocused panes stay cursor-less so split layouts
             // don't show phantom cursors on every pane.
             let cursor = state.terminal.cursor_position();
-            if state.focused && cursor.visible && state.cursor_blink_on {
+            // On the primary (normal) screen, force the cursor
+            // visible regardless of DEC mode 25. Full-screen TUI
+            // apps like vim, less, and `claude` hide the cursor
+            // with `ESC[?25l` when they start but don't always
+            // restore it with `ESC[?25h` on exit (signals, crashes,
+            // or just buggy cleanup). Trusting DEC 25 here means
+            // the user loses their cursor after an ungraceful
+            // TUI exit. On the alternate screen we still respect
+            // DEC 25 so vim/claude/etc. can legitimately hide it
+            // while they're running.
+            let on_alt = state.terminal.on_alt_screen();
+            let cursor_visible = cursor.visible || !on_alt;
+            if state.focused && cursor_visible && state.cursor_blink_on {
                 markup = splice_cursor(
                     &markup,
                     cursor.row as usize,
