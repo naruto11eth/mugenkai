@@ -197,6 +197,7 @@ impl MugenkaiWindow {
         install_paste_action(window, app, tab_view, tabs, &kb.paste);
         install_open_chat_action(window, app, tab_view, tabs, &kb.open_chat);
         install_explain_action(window, app, tab_view, tabs, &kb.explain_in_chat);
+        install_inline_chat_action(window, app, tab_view, tabs, &kb.inline_chat);
     }
 
     /// Show the window.
@@ -686,6 +687,25 @@ fn install_explain_action(
     });
     window.add_action(&action);
     set_accel(app, "win.explain-in-chat", accel_str);
+}
+
+fn install_inline_chat_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+    accel_str: &str,
+) {
+    let action = gio::SimpleAction::new("inline-chat", None);
+    let tab_view = tab_view.clone();
+    let tabs = Rc::clone(tabs);
+    action.connect_activate(move |_, _| {
+        if let Some(container) = active_container(&tab_view, &tabs) {
+            container.toggle_focused_inline_chat();
+        }
+    });
+    window.add_action(&action);
+    set_accel(app, "win.inline-chat", accel_str);
 }
 
 fn install_copy_action(

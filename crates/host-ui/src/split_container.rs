@@ -239,6 +239,14 @@ impl SplitContainer {
         }
     }
 
+    /// Toggle the inline chat on the focused pane.
+    pub fn toggle_focused_inline_chat(&self) {
+        let focused = self.tree.borrow().focused();
+        if let Some(pane) = self.panes.borrow().get(&focused) {
+            pane.toggle_inline_chat();
+        }
+    }
+
     /// Return the focused pane's terminal title (from OSC 0/2).
     #[must_use]
     pub fn focused_title(&self) -> Option<String> {

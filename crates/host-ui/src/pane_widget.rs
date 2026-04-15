@@ -53,6 +53,7 @@ use host_pty::{Child, SpawnOptions, Winsize};
 use host_core::{
     CursorConfig as CoreCursorConfig, CursorStyle, FontConfig as CoreFontConfig, MugenkaiConfig,
 };
+use crate::inline_chat::InlineChat;
 
 use crate::pango_markup::{CursorShape, CursorSpan, html_to_pango_markup, splice_cursor};
 
@@ -137,14 +138,10 @@ impl Drop for PaneState {
 pub struct PaneWidget {
     widget: gtk4::Box,
     write_tx: PaneInputSender,
-    // Reference to the selectable monospace label that renders
-    // the terminal grid. Used by `copy_selection` to read the
-    // current drag-selection into the system clipboard.
     screen_label: gtk4::Label,
-    // Shared with the 30ms drain_pty_bytes tick closure. Used
-    // directly by set_focused to flip tree-focus state.
     state: Rc<RefCell<PaneState>>,
     _controller: PaneController,
+    inline_chat: Rc<InlineChat>,
     // The glib timeout source that runs drain_pty_bytes every
     // 30ms. Wrapped in Option so Drop can take() and remove() it
     // — removing releases the closure (and its write_tx clone,
@@ -368,12 +365,35 @@ impl PaneWidget {
 
         install_scroll_controller(&vbox, &scroller, &state, &write_tx);
 
+        // Inline chat: embedded at the bottom of each pane,
+        // toggled via Ctrl+Shift+I. Auto-includes terminal
+        // context when the user asks a question.
+        let inline_chat = InlineChat::new();
+        vbox.append(inline_chat.widget());
+
+        {
+            let state_for_ctx = Rc::clone(&state);
+            inline_chat.set_get_terminal_text(move || {
+                let s = state_for_ctx.borrow();
+                Formatter::new(&s.terminal, OutputFormat::Plain, true)
+                    .and_then(|f| f.format())
+                    .unwrap_or_default()
+            });
+        }
+        {
+            let tx = write_tx.clone();
+            inline_chat.set_send_to_terminal(move |text: &str| {
+                let _ = tx.send(text.as_bytes().to_vec());
+            });
+        }
+
         Self {
             widget: vbox,
             write_tx,
             screen_label,
             state,
             _controller: controller,
+            inline_chat,
             timer_source: Some(timer_source),
         }
     }
@@ -401,6 +421,11 @@ impl PaneWidget {
         Formatter::new(&state.terminal, OutputFormat::Plain, true)
             .and_then(|f| f.format())
             .unwrap_or_default()
+    }
+
+    /// Toggle the inline chat widget at the bottom of this pane.
+    pub fn toggle_inline_chat(&self) {
+        self.inline_chat.toggle();
     }
 
     /// The terminal's current title as set by the shell via OSC 0/2.

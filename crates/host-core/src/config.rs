@@ -119,6 +119,7 @@ pub struct KeyBindings {
     pub paste: String,
     pub open_chat: String,
     pub explain_in_chat: String,
+    pub inline_chat: String,
 }
 
 impl Default for KeyBindings {
@@ -139,6 +140,7 @@ impl Default for KeyBindings {
             paste: "ctrl+shift+v".into(),
             open_chat: "ctrl+shift+a".into(),
             explain_in_chat: "ctrl+shift+e".into(),
+            inline_chat: "ctrl+shift+i".into(),
         }
     }
 }
@@ -275,6 +277,7 @@ impl MugenkaiConfig {
             ("mugenkai-keybinding-paste", &kb.paste),
             ("mugenkai-keybinding-open-chat", &kb.open_chat),
             ("mugenkai-keybinding-explain-in-chat", &kb.explain_in_chat),
+            ("mugenkai-keybinding-inline-chat", &kb.inline_chat),
         ] {
             let _ = writeln!(out, "{key:<48} = {value}");
         }
@@ -435,6 +438,7 @@ impl MugenkaiConfig {
             "mugenkai-keybinding-explain-in-chat" => {
                 self.keybindings.explain_in_chat = value.into();
             }
+            "mugenkai-keybinding-inline-chat" => self.keybindings.inline_chat = value.into(),
 
             // ─── cursor ──────────────────────────────────────
             "mugenkai-cursor-style" => {
