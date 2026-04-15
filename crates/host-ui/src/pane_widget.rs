@@ -215,10 +215,14 @@ impl PaneWidget {
             .margin_end(8)
             .build();
 
+        // Debug status label — hidden in production builds.
+        // Shows "shell running · bells N · titles N" for
+        // development diagnostics only.
         let status_label = gtk4::Label::builder()
             .label("starting shell…")
             .halign(gtk4::Align::Start)
             .css_classes(["dim-label"])
+            .visible(false)
             .build();
         vbox.append(&status_label);
 

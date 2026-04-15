@@ -230,22 +230,26 @@ impl SettingsView {
         let actions = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Horizontal)
             .spacing(12)
-            .margin_top(24)
+            .margin_top(20)
             .margin_bottom(24)
             .margin_start(24)
             .margin_end(24)
-            .halign(gtk4::Align::End)
+            .halign(gtk4::Align::Fill)
             .build();
 
-        let save_btn = gtk4::Button::builder()
-            .label("Save")
-            .css_classes(["mg-btn-primary"])
-            .build();
         let reset_btn = gtk4::Button::builder()
             .label("Reset to defaults")
-            .css_classes(["mg-btn-secondary"])
+            .css_classes(["mg-btn-ghost"])
             .build();
+        let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        let save_btn = gtk4::Button::builder()
+            .label("Save changes")
+            .css_classes(["mg-btn-primary"])
+            .build();
+        save_btn.set_size_request(140, 36);
         actions.append(&reset_btn);
+        actions.append(&spacer);
         actions.append(&save_btn);
 
         // ─── layout root ──────────────────────────────────

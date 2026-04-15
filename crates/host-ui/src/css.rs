@@ -402,96 +402,129 @@ toast {
 }
 
 /* ── adw preferences overrides ────────────────────────── */
-/* These restyle stock AdwPreferencesPage / Group / Row    */
-/* widgets so the Settings tab inherits the mugenkai       */
-/* dark theme instead of stock Adwaita beige/white.        */
+/* Redesigned for a Warp/Pane-style dark settings panel.  */
+/* Generous spacing, clear section hierarchy, controls    */
+/* well-separated from labels.                            */
 
 preferencespage {
     background-color: var(--mg-bg-primary);
+    padding: 12px 24px;
 }
+
+/* ── section cards ────────────────────────────────────── */
 
 preferencesgroup {
     background-color: var(--mg-bg-secondary);
     border: 1px solid var(--mg-border-primary);
-    border-radius: var(--mg-radius-lg);
-    padding: 4px;
-    margin: 8px 0;
+    border-radius: var(--mg-radius-xl);
+    padding: 8px 4px;
+    margin: 16px 0;
 }
 
+/* Section headings — bold, accent-colored left border */
 preferencesgroup > label {
-    color: var(--mg-text-tertiary);
-    font-weight: 600;
-    font-size: 12px;
-    letter-spacing: 0.5px;
+    color: var(--mg-text-primary);
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.3px;
+    padding: 12px 16px 8px 16px;
+    border-left: 3px solid var(--mg-accent);
+    margin-left: 8px;
+    margin-bottom: 4px;
 }
 
-/* Entry / Action / Switch / Spin / Combo rows */
+/* Section description text */
+preferencesgroup > label + label {
+    color: var(--mg-text-tertiary);
+    font-size: 11px;
+    font-weight: 400;
+    padding: 0 16px 8px 28px;
+    border-left: none;
+    margin-left: 0;
+}
+
+/* ── setting rows ─────────────────────────────────────── */
+
 row {
     background-color: var(--mg-bg-secondary);
     color: var(--mg-text-primary);
     border-bottom: 1px solid var(--mg-border-subtle);
     border-radius: 0;
-    min-height: 48px;
-    padding: 4px 14px;
-    margin: 0;
+    min-height: 56px;
+    padding: 6px 16px;
+    margin: 0 4px;
+}
+row:first-child {
+    border-radius: var(--mg-radius-lg) var(--mg-radius-lg) 0 0;
 }
 row:last-child {
     border-bottom: none;
+    border-radius: 0 0 var(--mg-radius-lg) var(--mg-radius-lg);
+}
+row:only-child {
+    border-radius: var(--mg-radius-lg);
 }
 row:hover {
     background-color: var(--mg-bg-hover);
-}
-
-row > box {
-    spacing: 12px;
 }
 
 row > box > label.title {
     color: var(--mg-text-primary);
     font-weight: 500;
     font-size: 13px;
-    min-width: 180px;
 }
 row > box > label.subtitle {
     color: var(--mg-text-tertiary);
     font-size: 11px;
+    margin-top: 2px;
 }
 
-/* Entry fields inside rows — give them breathing room */
+/* ── entry fields (keybindings, colors, font family) ── */
+
 row entry, row text {
     background-color: var(--mg-bg-tertiary);
     color: var(--mg-text-primary);
     border: 1px solid var(--mg-border-primary);
-    border-radius: var(--mg-radius-sm);
+    border-radius: var(--mg-radius-md);
     caret-color: var(--mg-accent);
-    min-height: 30px;
-    padding: 4px 8px;
+    min-height: 32px;
+    min-width: 160px;
+    padding: 4px 10px;
+    margin: 4px 0;
 }
 row entry:focus, row text:focus {
     border-color: var(--mg-accent);
+    box-shadow: 0 0 0 1px var(--mg-accent);
 }
 
-/* Spin buttons */
+/* ── spin buttons ─────────────────────────────────────── */
+
 spinbutton {
     background-color: var(--mg-bg-tertiary);
     color: var(--mg-text-primary);
     border: 1px solid var(--mg-border-primary);
-    border-radius: var(--mg-radius-sm);
+    border-radius: var(--mg-radius-md);
+    min-height: 32px;
 }
 spinbutton > button {
-    background-color: var(--mg-bg-tertiary);
+    background-color: transparent;
     color: var(--mg-text-secondary);
     border: none;
+    min-width: 28px;
 }
 spinbutton > button:hover {
     background-color: var(--mg-bg-hover);
+    color: var(--mg-text-primary);
 }
 
-/* Switches */
+/* ── switches ─────────────────────────────────────────── */
+
 switch {
     background-color: var(--mg-bg-tertiary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-full);
+    min-width: 44px;
+    min-height: 24px;
 }
 switch:checked {
     background-color: var(--mg-accent);
@@ -500,31 +533,43 @@ switch:checked {
 switch slider {
     background-color: var(--mg-text-secondary);
     border-radius: var(--mg-radius-full);
+    min-width: 18px;
+    min-height: 18px;
 }
 switch:checked slider {
     background-color: var(--mg-text-on-accent);
 }
 
-/* ComboRow dropdown */
+/* ── combo/dropdown ───────────────────────────────────── */
+
 row dropdown {
     background-color: var(--mg-bg-tertiary);
     color: var(--mg-text-primary);
     border: 1px solid var(--mg-border-primary);
-    border-radius: var(--mg-radius-sm);
+    border-radius: var(--mg-radius-md);
+    min-height: 32px;
+    padding: 0 8px;
 }
 
-/* Dropdown popover */
 popover contents {
     background-color: var(--mg-bg-secondary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-lg);
+    padding: 4px;
+}
+popover modelbutton,
+popover row {
+    border-radius: var(--mg-radius-md);
+    padding: 6px 12px;
+    margin: 2px 4px;
 }
 popover modelbutton:hover,
 popover row:hover {
     background-color: var(--mg-bg-hover);
 }
 
-/* Scrollbars */
+/* ── scrollbars ───────────────────────────────────────── */
+
 scrollbar slider {
     background-color: var(--mg-border-primary);
     border-radius: var(--mg-radius-full);
@@ -536,7 +581,6 @@ scrollbar slider:hover {
 }
 
 /* ── action buttons ──────────────────────────────────── */
-/* Override stock Adw suggested-action / destructive       */
 
 button.suggested-action {
     background-color: var(--mg-accent);
@@ -556,7 +600,6 @@ button.destructive-action {
     border-radius: var(--mg-radius-md);
 }
 
-/* Flat buttons (sidebar, header bar) */
 button.flat {
     color: var(--mg-text-secondary);
 }
