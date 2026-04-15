@@ -12,6 +12,7 @@ mod app;
 mod chat_view;
 mod css;
 mod daemon_client;
+mod onboarding_view;
 mod pane_widget;
 mod pango_markup;
 mod settings_view;

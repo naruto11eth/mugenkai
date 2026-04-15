@@ -7,6 +7,7 @@ use gtk4::{gio, glib};
 use host_core::MugenkaiConfig;
 
 use crate::daemon_client::DaemonClient;
+use crate::onboarding_view;
 use crate::window::MugenkaiWindow;
 
 /// Reverse-DNS app id used for GTK's `application_id` and the desktop
@@ -65,28 +66,25 @@ impl MugenkaiApplication {
         let config_clone = Rc::clone(&config);
         let daemon_clone = Rc::clone(&daemon);
         inner.connect_activate(move |app| {
-            // Spawn the sidecar daemon the first time a window
-            // activates. Subsequent activations reuse the existing
-            // connection.
-            if daemon_clone.borrow().is_none() {
-                match DaemonClient::spawn_and_connect() {
-                    Ok(client) => {
-                        eprintln!("[mugenkai] daemon ready");
-                        *daemon_clone.borrow_mut() = Some(client);
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "[mugenkai] daemon unavailable: {err}. \
-                             Running without skills — set MUGENKAI_DAEMON_CMD and \
-                             restart to enable."
-                        );
-                    }
-                }
+            // First launch: show the onboarding wizard. On finish
+            // it writes a marker file and opens the normal window.
+            if !onboarding_view::is_onboarded() {
+                let app_clone = app.clone();
+                let config_for_ob = Rc::clone(&config_clone);
+                let windows_for_ob = Rc::clone(&windows_clone);
+                let daemon_for_ob = Rc::clone(&daemon_clone);
+                onboarding_view::OnboardingView::present(app, move || {
+                    launch_main_window(
+                        &app_clone,
+                        &config_for_ob,
+                        &windows_for_ob,
+                        &daemon_for_ob,
+                    );
+                });
+                return;
             }
 
-            let window = MugenkaiWindow::with_config(app, &config_clone);
-            window.present();
-            windows_clone.borrow_mut().push(window);
+            launch_main_window(app, &config_clone, &windows_clone, &daemon_clone);
         });
 
         Self {
@@ -125,4 +123,35 @@ impl Default for MugenkaiApplication {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Shared helper: spawn the daemon (if not already running),
+/// then open a `MugenkaiWindow`. Called both from the normal
+/// activate path and from the onboarding wizard's finish
+/// callback.
+fn launch_main_window(
+    app: &adw::Application,
+    config: &Rc<MugenkaiConfig>,
+    windows: &Rc<RefCell<Vec<MugenkaiWindow>>>,
+    daemon: &Rc<RefCell<Option<DaemonClient>>>,
+) {
+    if daemon.borrow().is_none() {
+        match DaemonClient::spawn_and_connect() {
+            Ok(client) => {
+                eprintln!("[mugenkai] daemon ready");
+                *daemon.borrow_mut() = Some(client);
+            }
+            Err(err) => {
+                eprintln!(
+                    "[mugenkai] daemon unavailable: {err}. \
+                     Running without skills — set MUGENKAI_DAEMON_CMD and \
+                     restart to enable."
+                );
+            }
+        }
+    }
+
+    let window = MugenkaiWindow::with_config(app, config);
+    window.present();
+    windows.borrow_mut().push(window);
 }
