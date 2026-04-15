@@ -124,6 +124,12 @@ struct PaneState {
     /// without touching GTK CSS. Formatted once at construction
     /// time as `"<family> <size>"` (pango's native syntax).
     font_desc_str: String,
+    /// Outer pango `foreground=` color applied to the whole label
+    /// markup. ANSI-colored runs from libghostty-vt override it;
+    /// uncolored runs inherit — so shell prompts (which typically
+    /// use ANSI codes) still render in their own colors while
+    /// plain output picks up the theme's terminal-fg.
+    terminal_fg: String,
 }
 
 impl Drop for PaneState {
@@ -192,20 +198,34 @@ impl PaneWidget {
     /// convenience wrappers for tests.
     #[must_use]
     pub fn with_config(cfg: &MugenkaiConfig) -> Self {
-        Self::with_cursor_and_font(&cfg.cursor, &cfg.font)
+        let terminal_fg = crate::css::theme_terminal_fg(&cfg.theme);
+        Self::with_all(&cfg.cursor, &cfg.font, terminal_fg)
     }
 
     /// Build a pane with cursor appearance driven by the user's
     /// configuration, using the system default font.
     #[must_use]
     pub fn with_cursor_config(cursor_cfg: &CoreCursorConfig) -> Self {
-        Self::with_cursor_and_font(cursor_cfg, &CoreFontConfig::default())
+        Self::with_all(cursor_cfg, &CoreFontConfig::default(), "#e6e8ee")
     }
 
     /// Build a pane with explicit cursor + font configuration.
+    /// Kept for backwards compatibility; new callers should use
+    /// [`with_config`](Self::with_config).
+    #[must_use]
+    pub fn with_cursor_and_font(cursor_cfg: &CoreCursorConfig, font_cfg: &CoreFontConfig) -> Self {
+        Self::with_all(cursor_cfg, font_cfg, "#e6e8ee")
+    }
+
+    /// Full constructor with explicit cursor, font, and terminal
+    /// foreground color. All other constructors delegate here.
     #[must_use]
     #[allow(clippy::too_many_lines)]
-    pub fn with_cursor_and_font(cursor_cfg: &CoreCursorConfig, font_cfg: &CoreFontConfig) -> Self {
+    pub fn with_all(
+        cursor_cfg: &CoreCursorConfig,
+        font_cfg: &CoreFontConfig,
+        terminal_fg: &str,
+    ) -> Self {
         let vbox = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Vertical)
             .spacing(6)
@@ -328,6 +348,7 @@ impl PaneWidget {
             last_rows: initial_rows,
             mouse_encoder,
             font_desc_str,
+            terminal_fg: terminal_fg.to_string(),
         }));
 
         let (pty_bytes_tx, pty_bytes_rx) = mpsc::channel::<Vec<u8>>();
@@ -758,6 +779,7 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
         Err(err) => Err(err),
     };
     let font_desc_attr = &state.font_desc_str;
+    let fg_attr = &state.terminal_fg;
 
     match html {
         Ok(html) => {
@@ -784,7 +806,9 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
             // sets the user's configured monospace font. Pango
             // spans inherit attributes from parents, so the inner
             // fg/bg spans layer on top without overriding this.
-            let wrapped = format!("<span font_desc=\"{font_desc_attr}\">{markup}</span>");
+            let wrapped = format!(
+                "<span font_desc=\"{font_desc_attr}\" foreground=\"{fg_attr}\">{markup}</span>"
+            );
             screen_label.set_markup(&wrapped);
         }
         Err(err) => {
