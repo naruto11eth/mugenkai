@@ -27,6 +27,7 @@
 //! - Per-field validation UI. Invalid values (e.g. malformed
 //!   hex colors) just fall through to defaults on next launch.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -45,41 +46,43 @@ pub struct SettingsView {
 
 struct SettingsRows {
     // ─── keybindings ─────────────────────────────────────────
-    quit: adw::EntryRow,
-    split_horizontal: adw::EntryRow,
-    split_vertical: adw::EntryRow,
-    close_pane: adw::EntryRow,
-    focus_next: adw::EntryRow,
-    focus_prev: adw::EntryRow,
-    new_tab: adw::EntryRow,
-    close_tab: adw::EntryRow,
-    next_tab: adw::EntryRow,
-    prev_tab: adw::EntryRow,
-    open_settings: adw::EntryRow,
-    copy: adw::EntryRow,
-    paste: adw::EntryRow,
-    open_chat: adw::EntryRow,
-    explain_in_chat: adw::EntryRow,
-    inline_chat: adw::EntryRow,
+    quit: gtk4::Entry,
+    split_horizontal: gtk4::Entry,
+    split_vertical: gtk4::Entry,
+    close_pane: gtk4::Entry,
+    focus_next: gtk4::Entry,
+    focus_prev: gtk4::Entry,
+    new_tab: gtk4::Entry,
+    close_tab: gtk4::Entry,
+    next_tab: gtk4::Entry,
+    prev_tab: gtk4::Entry,
+    open_settings: gtk4::Entry,
+    copy: gtk4::Entry,
+    paste: gtk4::Entry,
+    open_chat: gtk4::Entry,
+    explain_in_chat: gtk4::Entry,
+    inline_chat: gtk4::Entry,
 
     // ─── cursor ──────────────────────────────────────────────
     cursor_style: adw::ComboRow,
     cursor_blink: adw::SwitchRow,
     cursor_blink_interval: adw::SpinRow,
-    cursor_color: adw::EntryRow,
-    cursor_text_color: adw::EntryRow,
+    cursor_color: gtk4::Entry,
+    cursor_text_color: gtk4::Entry,
 
     // ─── panes ───────────────────────────────────────────────
     focus_ring: adw::SwitchRow,
-    focus_ring_color: adw::EntryRow,
+    focus_ring_color: gtk4::Entry,
     split_ratio: adw::SpinRow,
 
     // ─── font ────────────────────────────────────────────────
-    font_family: adw::EntryRow,
+    font_family: gtk4::Entry,
     font_size_pt: adw::SpinRow,
 
     // ─── theme ───────────────────────────────────────────────
-    theme: adw::ComboRow,
+    /// Currently-selected theme name; updated by click handlers
+    /// on the theme swatch rows. Read by `collect_config` on Save.
+    theme: Rc<RefCell<String>>,
 }
 
 impl SettingsView {
@@ -97,40 +100,48 @@ impl SettingsView {
             .description("Accelerator format: ctrl+shift+d, alt+enter, ctrl+page_down")
             .build();
 
-        let quit = entry_row("Quit", &config.keybindings.quit);
-        let split_horizontal = entry_row("Split horizontal", &config.keybindings.split_horizontal);
-        let split_vertical = entry_row("Split vertical", &config.keybindings.split_vertical);
-        let close_pane = entry_row("Close focused pane", &config.keybindings.close_pane);
-        let focus_next = entry_row("Focus next pane", &config.keybindings.focus_next);
-        let focus_prev = entry_row("Focus previous pane", &config.keybindings.focus_prev);
-        let new_tab = entry_row("New tab", &config.keybindings.new_tab);
-        let close_tab = entry_row("Close tab", &config.keybindings.close_tab);
-        let next_tab = entry_row("Next tab", &config.keybindings.next_tab);
-        let prev_tab = entry_row("Previous tab", &config.keybindings.prev_tab);
-        let open_settings = entry_row("Open settings", &config.keybindings.open_settings);
-        let copy = entry_row("Copy", &config.keybindings.copy);
-        let paste = entry_row("Paste", &config.keybindings.paste);
-        let open_chat = entry_row("Open chat", &config.keybindings.open_chat);
-        let explain_in_chat = entry_row("Explain in chat", &config.keybindings.explain_in_chat);
-        let inline_chat = entry_row("Inline chat toggle", &config.keybindings.inline_chat);
+        let (quit_row, quit) = entry_row("Quit", &config.keybindings.quit);
+        let (split_horizontal_row, split_horizontal) =
+            entry_row("Split horizontal", &config.keybindings.split_horizontal);
+        let (split_vertical_row, split_vertical) =
+            entry_row("Split vertical", &config.keybindings.split_vertical);
+        let (close_pane_row, close_pane) =
+            entry_row("Close focused pane", &config.keybindings.close_pane);
+        let (focus_next_row, focus_next) =
+            entry_row("Focus next pane", &config.keybindings.focus_next);
+        let (focus_prev_row, focus_prev) =
+            entry_row("Focus previous pane", &config.keybindings.focus_prev);
+        let (new_tab_row, new_tab) = entry_row("New tab", &config.keybindings.new_tab);
+        let (close_tab_row, close_tab) = entry_row("Close tab", &config.keybindings.close_tab);
+        let (next_tab_row, next_tab) = entry_row("Next tab", &config.keybindings.next_tab);
+        let (prev_tab_row, prev_tab) = entry_row("Previous tab", &config.keybindings.prev_tab);
+        let (open_settings_row, open_settings) =
+            entry_row("Open settings", &config.keybindings.open_settings);
+        let (copy_row, copy) = entry_row("Copy", &config.keybindings.copy);
+        let (paste_row, paste) = entry_row("Paste", &config.keybindings.paste);
+        let (open_chat_row, open_chat) = entry_row("Open chat", &config.keybindings.open_chat);
+        let (explain_in_chat_row, explain_in_chat) =
+            entry_row("Explain in chat", &config.keybindings.explain_in_chat);
+        let (inline_chat_row, inline_chat) =
+            entry_row("Inline chat toggle", &config.keybindings.inline_chat);
 
         for row in [
-            &quit,
-            &split_horizontal,
-            &split_vertical,
-            &close_pane,
-            &focus_next,
-            &focus_prev,
-            &new_tab,
-            &close_tab,
-            &next_tab,
-            &prev_tab,
-            &open_settings,
-            &copy,
-            &paste,
-            &open_chat,
-            &explain_in_chat,
-            &inline_chat,
+            &quit_row,
+            &split_horizontal_row,
+            &split_vertical_row,
+            &close_pane_row,
+            &focus_next_row,
+            &focus_prev_row,
+            &new_tab_row,
+            &close_tab_row,
+            &next_tab_row,
+            &prev_tab_row,
+            &open_settings_row,
+            &copy_row,
+            &paste_row,
+            &open_chat_row,
+            &explain_in_chat_row,
+            &inline_chat_row,
         ] {
             kb_group.add(row);
         }
@@ -157,14 +168,16 @@ impl SettingsView {
         cursor_blink_interval.set_title("Blink interval (ms)");
         #[allow(clippy::cast_precision_loss)]
         cursor_blink_interval.set_value(config.cursor.blink_interval_ms as f64);
-        let cursor_color = entry_row("Cursor color (hex)", &config.cursor.color);
-        let cursor_text_color = entry_row("Cursor text color (hex)", &config.cursor.text_color);
+        let (cursor_color_row, cursor_color) =
+            entry_row("Cursor color (hex)", &config.cursor.color);
+        let (cursor_text_color_row, cursor_text_color) =
+            entry_row("Cursor text color (hex)", &config.cursor.text_color);
 
         cursor_group.add(&cursor_style);
         cursor_group.add(&cursor_blink);
         cursor_group.add(&cursor_blink_interval);
-        cursor_group.add(&cursor_color);
-        cursor_group.add(&cursor_text_color);
+        cursor_group.add(&cursor_color_row);
+        cursor_group.add(&cursor_text_color_row);
         page.add(&cursor_group);
 
         // ─── pane group ───────────────────────────────────
@@ -175,57 +188,77 @@ impl SettingsView {
             .subtitle("Show a colored border around the focused pane")
             .active(config.pane.focus_ring)
             .build();
-        let focus_ring_color = entry_row("Focus ring color (hex)", &config.pane.focus_ring_color);
+        let (focus_ring_color_row, focus_ring_color) =
+            entry_row("Focus ring color (hex)", &config.pane.focus_ring_color);
         let split_ratio = adw::SpinRow::with_range(0.1, 0.9, 0.05);
         split_ratio.set_title("Default split ratio");
         split_ratio.set_digits(2);
         split_ratio.set_value(f64::from(config.pane.split_ratio));
 
         pane_group.add(&focus_ring);
-        pane_group.add(&focus_ring_color);
+        pane_group.add(&focus_ring_color_row);
         pane_group.add(&split_ratio);
         page.add(&pane_group);
 
         // ─── font group ───────────────────────────────────
         let font_group = adw::PreferencesGroup::builder().title("Font").build();
 
-        let font_family = entry_row("Family (pango, e.g. 'monospace' or 'JetBrains Mono')", &config.font.family);
+        let (font_family_row, font_family) = entry_row(
+            "Family (pango, e.g. 'monospace' or 'JetBrains Mono')",
+            &config.font.family,
+        );
         let font_size_pt = adw::SpinRow::with_range(6.0, 48.0, 0.5);
         font_size_pt.set_title("Size (pt)");
         font_size_pt.set_digits(1);
         font_size_pt.set_value(f64::from(config.font.size_pt));
 
-        font_group.add(&font_family);
+        font_group.add(&font_family_row);
         font_group.add(&font_size_pt);
         page.add(&font_group);
 
-        // ─── theme group ──────────────────────────────────
+        // ─── theme group — swatch picker ──────────────────
         let theme_group = adw::PreferencesGroup::builder().title("Theme").build();
+        let theme_state: Rc<RefCell<String>> = Rc::new(RefCell::new(config.theme.clone()));
+        let theme_list = gtk4::ListBox::builder()
+            .selection_mode(gtk4::SelectionMode::None)
+            .css_classes(["mg-theme-list"])
+            .build();
 
-        let theme = {
-            let row = adw::ComboRow::builder().title("Preset").build();
-            let themes = crate::css::available_themes();
-            let model = gtk4::StringList::new(themes);
-            row.set_model(Some(&model));
-            let active_idx = themes
-                .iter()
-                .position(|&t| t == config.theme)
-                .unwrap_or(0);
-            #[allow(clippy::cast_possible_truncation)]
-            row.set_selected(active_idx as u32);
+        let rows_by_idx: Rc<RefCell<Vec<gtk4::ListBoxRow>>> = Rc::new(RefCell::new(Vec::new()));
 
-            // Live-switch on selection change so the user sees
-            // the theme before hitting Save.
-            row.connect_selected_notify(move |combo| {
-                let idx = combo.selected() as usize;
-                if let Some(&name) = themes.get(idx) {
-                    crate::css::switch_theme(name);
-                }
-            });
-            row
-        };
-        theme_group.add(&theme);
+        for &name in crate::css::available_themes() {
+            let row = build_theme_row(name, name == config.theme);
+            {
+                let theme_state = Rc::clone(&theme_state);
+                let rows_by_idx = Rc::clone(&rows_by_idx);
+                let name_owned = name.to_string();
+                let gesture = gtk4::GestureClick::new();
+                gesture.connect_released(move |_, _, _, _| {
+                    (*theme_state.borrow_mut()).clone_from(&name_owned);
+                    crate::css::switch_theme(&name_owned);
+                    // Repaint selection highlight on all rows.
+                    for r in rows_by_idx.borrow().iter() {
+                        let is_selected = r
+                            .widget_name()
+                            .as_str()
+                            .eq_ignore_ascii_case(&name_owned);
+                        if is_selected {
+                            r.add_css_class("mg-theme-row-selected");
+                        } else {
+                            r.remove_css_class("mg-theme-row-selected");
+                        }
+                    }
+                });
+                row.add_controller(gesture);
+            }
+            row.set_widget_name(name);
+            rows_by_idx.borrow_mut().push(row.clone());
+            theme_list.append(&row);
+        }
+
+        theme_group.add(&theme_list);
         page.add(&theme_group);
+        let theme = theme_state;
 
         // ─── action buttons ───────────────────────────────
         let actions = gtk4::Box::builder()
@@ -399,13 +432,7 @@ impl SettingsView {
             size_pt: rows.font_size_pt.value() as f32,
         };
 
-        let themes = crate::css::available_themes();
-        let theme_idx = rows.theme.selected() as usize;
-        cfg.theme = themes
-            .get(theme_idx)
-            .copied()
-            .unwrap_or("mugenkai-dark")
-            .to_string();
+        cfg.theme.clone_from(&rows.theme.borrow());
 
         cfg
     }
@@ -473,13 +500,8 @@ impl SettingsView {
         rows.font_size_pt
             .set_value(f64::from(defaults.font.size_pt));
 
-        let themes = crate::css::available_themes();
-        let default_idx = themes
-            .iter()
-            .position(|&t| t == defaults.theme)
-            .unwrap_or(0);
-        #[allow(clippy::cast_possible_truncation)]
-        rows.theme.set_selected(default_idx as u32);
+        (*rows.theme.borrow_mut()).clone_from(&defaults.theme);
+        crate::css::switch_theme(&defaults.theme);
 
         self.toast("Reset to defaults. Click Save to persist.");
     }
@@ -490,9 +512,100 @@ impl SettingsView {
     }
 }
 
-fn entry_row(title: &str, initial_text: &str) -> adw::EntryRow {
-    adw::EntryRow::builder()
-        .title(title)
+/// Build a theme-picker row: theme name on the left, a row of
+/// four color swatches on the right. Clicking it selects the
+/// theme (wired up by the caller).
+fn build_theme_row(name: &str, selected: bool) -> gtk4::ListBoxRow {
+    let hbox = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(12)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(14)
+        .margin_end(14)
+        .build();
+
+    let label = gtk4::Label::builder()
+        .label(crate::css::theme_display_name(name))
+        .halign(gtk4::Align::Start)
+        .hexpand(true)
+        .css_classes(["mg-field-label"])
+        .build();
+    hbox.append(&label);
+
+    let swatches = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    for color in crate::css::theme_swatches(name) {
+        let dot = gtk4::DrawingArea::new();
+        dot.set_size_request(20, 20);
+        dot.add_css_class("mg-swatch");
+        attach_inline_css(&dot, &format!("background-color: {color};"));
+        swatches.append(&dot);
+    }
+    hbox.append(&swatches);
+
+    let row = gtk4::ListBoxRow::builder()
+        .activatable(true)
+        .selectable(false)
+        .css_classes(["mg-theme-row"])
+        .child(&hbox)
+        .build();
+    if selected {
+        row.add_css_class("mg-theme-row-selected");
+    }
+    row
+}
+
+/// Per-widget inline CSS applied via a private `CssProvider`
+/// using a unique generated class name. Mirrors the helper in
+/// `onboarding_view.rs`.
+fn attach_inline_css(widget: &impl gtk4::prelude::IsA<gtk4::Widget>, css_body: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static INLINE_ID: AtomicU64 = AtomicU64::new(0);
+    let id = INLINE_ID.fetch_add(1, Ordering::Relaxed);
+    let class = format!("mg-sw{id}");
+    let rule = format!(".{class} {{ {css_body} }}");
+    widget.add_css_class(&class);
+    let provider = gtk4::CssProvider::new();
+    provider.load_from_string(&rule);
+    if let Some(display) = gtk4::gdk::Display::default() {
+        gtk4::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_USER,
+        );
+    }
+}
+
+/// Build a stacked settings field: big bold label on top, input
+/// box below on its own line. Returns both the container (to add
+/// to the preferences group) and the inner entry (so callers can
+/// read/write its text later).
+fn entry_row(title: &str, initial_text: &str) -> (gtk4::Box, gtk4::Entry) {
+    let label = gtk4::Label::builder()
+        .label(title)
+        .halign(gtk4::Align::Start)
+        .css_classes(["mg-field-label"])
+        .build();
+
+    let entry = gtk4::Entry::builder()
         .text(initial_text)
-        .build()
+        .hexpand(true)
+        .css_classes(["mg-field-input"])
+        .build();
+
+    let container = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
+        .spacing(6)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(14)
+        .margin_end(14)
+        .build();
+    container.append(&label);
+    container.append(&entry);
+
+    (container, entry)
 }
