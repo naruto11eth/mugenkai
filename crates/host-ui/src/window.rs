@@ -747,6 +747,14 @@ fn install_copy_action(
     set_accel(app, "win.copy", accel_str);
 }
 
+/// Paste action — context-aware:
+///
+/// - **Chat tab active:** route to the chat view's image paste
+///   (stages clipboard image as an attachment). Falls back to
+///   GTK's built-in text paste on the Entry when no image is
+///   available.
+/// - **Terminal tab active:** reads clipboard text and sends it
+///   to the focused pane's PTY.
 fn install_paste_action(
     window: &adw::ApplicationWindow,
     app: &adw::Application,
@@ -758,19 +766,32 @@ fn install_paste_action(
     let tab_view = tab_view.clone();
     let tabs = Rc::clone(tabs);
     action.connect_activate(move |_, _| {
-        let Some(container) = active_container(&tab_view, &tabs) else {
+        // Check which tab is active and route accordingly.
+        let Some(idx) = selected_index(&tab_view) else {
             return;
         };
-        let Some(display) = gtk4::gdk::Display::default() else {
-            return;
-        };
-        let clipboard = display.clipboard();
-        let container_for_cb = container.clone();
-        clipboard.read_text_async(None::<&gio::Cancellable>, move |result| {
-            if let Ok(Some(text)) = result {
-                container_for_cb.paste_to_focused(text.as_str());
+        let active_kind = tabs.borrow().get(idx).cloned();
+        match active_kind {
+            Some(TabKind::Chat(chat)) => {
+                chat.try_paste_image_from_clipboard();
             }
-        });
+            Some(TabKind::Terminal(container)) => {
+                let Some(display) = gtk4::gdk::Display::default() else {
+                    return;
+                };
+                let clipboard = display.clipboard();
+                let container_for_cb = container.clone();
+                clipboard.read_text_async(
+                    None::<&gio::Cancellable>,
+                    move |result| {
+                        if let Ok(Some(text)) = result {
+                            container_for_cb.paste_to_focused(text.as_str());
+                        }
+                    },
+                );
+            }
+            _ => {}
+        }
     });
     window.add_action(&action);
     set_accel(app, "win.paste", accel_str);

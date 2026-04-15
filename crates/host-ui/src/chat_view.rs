@@ -209,27 +209,11 @@ impl ChatView {
             });
         }
 
-        // Ctrl+Shift+V on the input pastes image data from the
-        // system clipboard as an attachment. Plain text paste
-        // (Ctrl+V) still works via GtkEntry's built-in handler.
-        {
-            let view_clone = Rc::clone(&view);
-            let key_controller = gtk4::EventControllerKey::new();
-            key_controller.connect_key_pressed(move |_, keyval, _, modifiers| {
-                let ctrl = modifiers.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
-                let shift = modifiers.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
-                if ctrl
-                    && shift
-                    && let Some(ch) = keyval.to_unicode()
-                    && (ch == 'v' || ch == 'V')
-                {
-                    view_clone.try_paste_image_from_clipboard();
-                    return gtk4::glib::Propagation::Stop;
-                }
-                gtk4::glib::Propagation::Proceed
-            });
-            view.input_entry.add_controller(key_controller);
-        }
+        // Ctrl+Shift+V routing for image paste happens at the
+        // window-action level (see `install_paste_action` in
+        // window.rs) so it wins against the chat entry's
+        // default paste handler. Plain Ctrl+V still performs
+        // the Entry's built-in text paste.
 
         view
     }
@@ -301,8 +285,9 @@ impl ChatView {
 
     /// Try to read an image from the system clipboard and stage
     /// it as a pending attachment. No-op if clipboard has no
-    /// image data.
-    fn try_paste_image_from_clipboard(self: &Rc<Self>) {
+    /// image data. Exposed so the window-level paste action can
+    /// route here when the chat tab is active.
+    pub fn try_paste_image_from_clipboard(self: &Rc<Self>) {
         let Some(display) = gtk4::gdk::Display::default() else {
             return;
         };
