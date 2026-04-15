@@ -76,6 +76,9 @@ struct SettingsRows {
     // ─── font ────────────────────────────────────────────────
     font_family: adw::EntryRow,
     font_size_pt: adw::SpinRow,
+
+    // ─── theme ───────────────────────────────────────────────
+    theme: adw::ComboRow,
 }
 
 impl SettingsView {
@@ -192,6 +195,34 @@ impl SettingsView {
         font_group.add(&font_size_pt);
         page.add(&font_group);
 
+        // ─── theme group ──────────────────────────────────
+        let theme_group = adw::PreferencesGroup::builder().title("Theme").build();
+
+        let theme = {
+            let row = adw::ComboRow::builder().title("Preset").build();
+            let themes = crate::css::available_themes();
+            let model = gtk4::StringList::new(themes);
+            row.set_model(Some(&model));
+            let active_idx = themes
+                .iter()
+                .position(|&t| t == config.theme)
+                .unwrap_or(0);
+            #[allow(clippy::cast_possible_truncation)]
+            row.set_selected(active_idx as u32);
+
+            // Live-switch on selection change so the user sees
+            // the theme before hitting Save.
+            row.connect_selected_notify(move |combo| {
+                let idx = combo.selected() as usize;
+                if let Some(&name) = themes.get(idx) {
+                    crate::css::switch_theme(name);
+                }
+            });
+            row
+        };
+        theme_group.add(&theme);
+        page.add(&theme_group);
+
         // ─── action buttons ───────────────────────────────
         let actions = gtk4::Box::builder()
             .orientation(gtk4::Orientation::Horizontal)
@@ -269,6 +300,7 @@ impl SettingsView {
             split_ratio,
             font_family,
             font_size_pt,
+            theme,
         };
 
         let view = Rc::new(Self {
@@ -357,6 +389,14 @@ impl SettingsView {
             size_pt: rows.font_size_pt.value() as f32,
         };
 
+        let themes = crate::css::available_themes();
+        let theme_idx = rows.theme.selected() as usize;
+        cfg.theme = themes
+            .get(theme_idx)
+            .copied()
+            .unwrap_or("mugenkai-dark")
+            .to_string();
+
         cfg
     }
 
@@ -420,6 +460,14 @@ impl SettingsView {
         rows.font_family.set_text(&defaults.font.family);
         rows.font_size_pt
             .set_value(f64::from(defaults.font.size_pt));
+
+        let themes = crate::css::available_themes();
+        let default_idx = themes
+            .iter()
+            .position(|&t| t == defaults.theme)
+            .unwrap_or(0);
+        #[allow(clippy::cast_possible_truncation)]
+        rows.theme.set_selected(default_idx as u32);
 
         self.toast("Reset to defaults. Click Save to persist.");
     }
