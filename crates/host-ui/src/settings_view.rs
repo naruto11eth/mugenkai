@@ -236,11 +236,11 @@ impl SettingsView {
 
         let save_btn = gtk4::Button::builder()
             .label("Save")
-            .css_classes(["suggested-action"])
+            .css_classes(["mg-btn-primary"])
             .build();
         let reset_btn = gtk4::Button::builder()
             .label("Reset to defaults")
-            .css_classes(["destructive-action"])
+            .css_classes(["mg-btn-secondary"])
             .build();
         actions.append(&reset_btn);
         actions.append(&save_btn);

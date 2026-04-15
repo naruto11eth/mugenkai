@@ -400,6 +400,221 @@ toast {
     color: var(--mg-text-primary);
     border-radius: var(--mg-radius-lg);
 }
+
+/* ── adw preferences overrides ────────────────────────── */
+/* These restyle stock AdwPreferencesPage / Group / Row    */
+/* widgets so the Settings tab inherits the mugenkai       */
+/* dark theme instead of stock Adwaita beige/white.        */
+
+preferencespage {
+    background-color: var(--mg-bg-primary);
+}
+
+preferencesgroup {
+    background-color: var(--mg-bg-secondary);
+    border: 1px solid var(--mg-border-primary);
+    border-radius: var(--mg-radius-lg);
+    padding: 4px;
+    margin: 8px 0;
+}
+
+preferencesgroup > label {
+    color: var(--mg-text-tertiary);
+    font-weight: 600;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+}
+
+/* Entry / Action / Switch / Spin / Combo rows */
+row {
+    background-color: var(--mg-bg-secondary);
+    color: var(--mg-text-primary);
+    border-bottom: 1px solid var(--mg-border-subtle);
+    border-radius: 0;
+    min-height: 42px;
+    padding: 0 12px;
+    margin: 0;
+}
+row:last-child {
+    border-bottom: none;
+}
+row:hover {
+    background-color: var(--mg-bg-hover);
+}
+
+row > box > label.title {
+    color: var(--mg-text-primary);
+    font-weight: 500;
+}
+row > box > label.subtitle {
+    color: var(--mg-text-tertiary);
+    font-size: 11px;
+}
+
+/* Entry fields inside rows */
+row entry, row text {
+    background-color: var(--mg-bg-tertiary);
+    color: var(--mg-text-primary);
+    border: 1px solid var(--mg-border-primary);
+    border-radius: var(--mg-radius-sm);
+    caret-color: var(--mg-accent);
+    min-height: 28px;
+}
+row entry:focus, row text:focus {
+    border-color: var(--mg-accent);
+}
+
+/* Spin buttons */
+spinbutton {
+    background-color: var(--mg-bg-tertiary);
+    color: var(--mg-text-primary);
+    border: 1px solid var(--mg-border-primary);
+    border-radius: var(--mg-radius-sm);
+}
+spinbutton > button {
+    background-color: var(--mg-bg-tertiary);
+    color: var(--mg-text-secondary);
+    border: none;
+}
+spinbutton > button:hover {
+    background-color: var(--mg-bg-hover);
+}
+
+/* Switches */
+switch {
+    background-color: var(--mg-bg-tertiary);
+    border: 1px solid var(--mg-border-primary);
+    border-radius: var(--mg-radius-full);
+}
+switch:checked {
+    background-color: var(--mg-accent);
+    border-color: var(--mg-accent);
+}
+switch slider {
+    background-color: var(--mg-text-secondary);
+    border-radius: var(--mg-radius-full);
+}
+switch:checked slider {
+    background-color: var(--mg-text-on-accent);
+}
+
+/* ComboRow dropdown */
+row dropdown {
+    background-color: var(--mg-bg-tertiary);
+    color: var(--mg-text-primary);
+    border: 1px solid var(--mg-border-primary);
+    border-radius: var(--mg-radius-sm);
+}
+
+/* Dropdown popover */
+popover contents {
+    background-color: var(--mg-bg-secondary);
+    border: 1px solid var(--mg-border-primary);
+    border-radius: var(--mg-radius-lg);
+}
+popover modelbutton:hover,
+popover row:hover {
+    background-color: var(--mg-bg-hover);
+}
+
+/* Scrollbars */
+scrollbar slider {
+    background-color: var(--mg-border-primary);
+    border-radius: var(--mg-radius-full);
+    min-width: 6px;
+    min-height: 6px;
+}
+scrollbar slider:hover {
+    background-color: var(--mg-text-quaternary);
+}
+
+/* ── action buttons ──────────────────────────────────── */
+/* Override stock Adw suggested-action / destructive       */
+
+button.suggested-action {
+    background-color: var(--mg-accent);
+    color: var(--mg-text-on-accent);
+    border: none;
+    border-radius: var(--mg-radius-md);
+    font-weight: 600;
+}
+button.suggested-action:hover {
+    background-color: var(--mg-accent-hover);
+}
+
+button.destructive-action {
+    background-color: var(--mg-status-error);
+    color: var(--mg-text-on-accent);
+    border: none;
+    border-radius: var(--mg-radius-md);
+}
+
+/* Flat buttons (sidebar, header bar) */
+button.flat {
+    color: var(--mg-text-secondary);
+}
+button.flat:hover {
+    color: var(--mg-text-primary);
+    background-color: var(--mg-bg-hover);
+}
+
+/* ── list boxes ──────────────────────────────────────── */
+
+listbox {
+    background-color: var(--mg-bg-primary);
+}
+listbox > row {
+    background-color: var(--mg-bg-primary);
+    border-bottom: 1px solid var(--mg-border-subtle);
+}
+listbox > row:selected {
+    background-color: var(--mg-bg-tertiary);
+}
+
+/* ── navigation sidebar ──────────────────────────────── */
+
+listbox.navigation-sidebar {
+    background-color: transparent;
+}
+listbox.navigation-sidebar > row {
+    background-color: transparent;
+    border: none;
+    border-radius: var(--mg-radius-md);
+    margin: 2px 6px;
+    padding: 6px 10px;
+}
+listbox.navigation-sidebar > row:hover {
+    background-color: var(--mg-bg-hover);
+}
+listbox.navigation-sidebar > row:selected {
+    background-color: var(--mg-bg-tertiary);
+    color: var(--mg-text-primary);
+}
+
+/* ── separator ───────────────────────────────────────── */
+
+separator {
+    background-color: var(--mg-border-subtle);
+    min-height: 1px;
+}
+
+/* ── overlay split view ──────────────────────────────── */
+
+.sidebar-pane {
+    background-color: var(--mg-bg-primary);
+}
+
+/* ── boxed-list (chat message list) ──────────────────── */
+
+listbox.boxed-list {
+    background-color: var(--mg-bg-primary);
+    border: none;
+}
+listbox.boxed-list > row {
+    background-color: var(--mg-bg-primary);
+    border-bottom: 1px solid var(--mg-border-subtle);
+    border-radius: 0;
+}
 ";
 
 // ─── theme definitions ───────────────────────────────────────
