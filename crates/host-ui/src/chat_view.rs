@@ -80,11 +80,17 @@ pub type SendToTerminal = Box<dyn Fn(&str) -> bool + 'static>;
 /// so it can be resent to the daemon on every follow-up, and a
 /// `pending` flag that disables the send button while a request
 /// is in flight so users can't queue up parallel requests.
-/// One image attachment pending on the input: base64-encoded PNG
-/// bytes plus the thumbnail box so we can remove it from the UI
-/// when the user clicks ✕ or when the message is sent.
+/// One image attachment pending on the input.
+///
+/// We track the (already compressed-if-needed) base64 payload, the
+/// Anthropic-accepted MIME type, and the thumbnail row so the ✕
+/// button can yank it from the UI. Storing `media_type` here is
+/// what lets a JPEG-compressed attachment go out with the right
+/// `image/jpeg` content block instead of a wrong `image/png` —
+/// before this field every attachment was hard-coded as PNG.
 struct PendingAttachment {
     base64: String,
+    media_type: &'static str,
     thumbnail: gtk4::Box,
 }
 
@@ -295,18 +301,43 @@ impl ChatView {
         let view_clone = Rc::clone(self);
         clipboard.read_texture_async(None::<&gtk4::gio::Cancellable>, move |result| {
             if let Ok(Some(texture)) = result {
-                let bytes = texture.save_to_png_bytes();
-                let b64 = base64_encode(&bytes);
-                view_clone.add_attachment(b64);
+                let png_bytes = texture.save_to_png_bytes();
+                view_clone.add_attachment_from_bytes(&png_bytes);
             } else {
                 view_clone.toast("Clipboard has no image");
             }
         });
     }
 
-    /// Append a base64-encoded PNG attachment + a thumbnail
-    /// widget above the input with an ✕ remove button.
-    fn add_attachment(self: &Rc<Self>, base64: String) {
+    /// Run the image bytes through the Anthropic-aware compressor
+    /// (downscales + JPEG-encodes if oversized) and stage the
+    /// result as a pending attachment. Toasts the user if the
+    /// bytes don't decode as a recognisable image.
+    ///
+    /// All paste/drag-drop entry points funnel here so the budget
+    /// + media-type rules live in exactly one place.
+    pub(crate) fn add_attachment_from_bytes(self: &Rc<Self>, bytes: &[u8]) {
+        let Some(compressed) = compress_for_anthropic(bytes) else {
+            self.toast("Couldn't read that image");
+            return;
+        };
+        let original_kb = bytes.len() / 1024;
+        let final_kb = compressed.bytes.len() / 1024;
+        if compressed.bytes.len() < bytes.len() {
+            self.toast(&format!(
+                "Image compressed: {original_kb} KB → {final_kb} KB"
+            ));
+        }
+        let b64 = base64_encode(&compressed.bytes);
+        self.add_attachment(b64, compressed.media_type);
+    }
+
+    /// Append an already-encoded base64 attachment + thumbnail
+    /// widget above the input with an ✕ remove button. Callers
+    /// should run their bytes through [`compress_for_anthropic`]
+    /// first; this stage just renders the thumbnail and bookkeeps
+    /// the staged list.
+    fn add_attachment(self: &Rc<Self>, base64: String, media_type: &'static str) {
         let Ok(bytes_for_preview) = base64_decode(&base64) else {
             return;
         };
@@ -358,6 +389,7 @@ impl ChatView {
 
         self.attachments.borrow_mut().push(PendingAttachment {
             base64,
+            media_type,
             thumbnail: thumb_box,
         });
     }
@@ -444,7 +476,7 @@ impl ChatView {
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/png",
+                        "media_type": att.media_type,
                         "data": att.base64,
                     },
                 })
@@ -821,14 +853,12 @@ const ANTHROPIC_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 /// Practical cap below the hard 5 MB so the base64-inflated JSON
 /// payload still fits with margin for surrounding text.
-#[allow(dead_code, reason = "wired in by attachment refactor")]
 const COMPRESS_TARGET_BYTES: usize = 3_500_000;
 
 /// Largest single dimension we'll let through. Anthropic accepts
 /// up to 8000×8000 but anything bigger is wasteful and slow to
 /// process — a 4K screenshot already conveys every detail Claude
 /// needs.
-#[allow(dead_code, reason = "wired in by attachment refactor")]
 const COMPRESS_MAX_EDGE_PX: u32 = 4096;
 
 /// Outcome of [`compress_for_anthropic`].
@@ -837,7 +867,6 @@ const COMPRESS_MAX_EDGE_PX: u32 = 4096;
 /// type so the caller can attach the correct `media_type` to the
 /// Anthropic content block.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "wired in by attachment refactor")]
 pub(crate) struct CompressedImage {
     pub bytes: Vec<u8>,
     pub media_type: &'static str,
@@ -857,7 +886,6 @@ pub(crate) struct CompressedImage {
 ///
 /// Returns `None` if the bytes cannot be decoded as an image at
 /// all — caller should toast the user and skip staging.
-#[allow(dead_code, reason = "wired in by attachment refactor")]
 pub(crate) fn compress_for_anthropic(input: &[u8]) -> Option<CompressedImage> {
     // Cheap path: input is small enough already, just trust the
     // caller's bytes and detect media type from the magic header.
@@ -931,7 +959,6 @@ pub(crate) fn compress_for_anthropic(input: &[u8]) -> Option<CompressedImage> {
 /// Map `image::ImageFormat` → Anthropic-accepted MIME type.
 /// Returns `""` for formats Anthropic doesn't accept so callers
 /// know to recompress.
-#[allow(dead_code, reason = "wired in by attachment refactor")]
 fn format_to_media_type(fmt: image::ImageFormat) -> &'static str {
     match fmt {
         image::ImageFormat::Png => "image/png",
