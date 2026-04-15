@@ -536,14 +536,16 @@ where
     let key_controller = gtk4::EventControllerKey::new();
     key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
     key_controller.connect_key_pressed(move |_controller, keyval, _keycode, modifiers| {
-        if let Some(bytes) = key_to_bytes(keyval, modifiers) {
-            if let Some(tx) = sender_fn() {
-                let _ = tx.send(bytes);
-            }
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
+        if let Some(bytes) = key_to_bytes(keyval, modifiers)
+            && let Some(tx) = sender_fn()
+        {
+            let _ = tx.send(bytes);
+            return glib::Propagation::Stop;
         }
+        // No terminal to forward to (chat/settings tab) or no
+        // byte mapping — let the event reach the focused widget
+        // so Entry/TextView inputs work normally.
+        glib::Propagation::Proceed
     });
     widget.add_controller(key_controller);
 }

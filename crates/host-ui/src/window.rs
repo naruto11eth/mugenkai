@@ -272,13 +272,14 @@ fn build_sidebar(
     sidebar.append(&tab_list);
 
     // Sync the tab list with the AdwTabView's pages. We rebuild
-    // the list whenever the tab view's pages change.
-    let rebuild_tab_list = {
+    // the list whenever the tab view's pages change. Wrapped in
+    // Rc so the closure can be shared across multiple signal
+    // connections.
+    let rebuild_tab_list: Rc<dyn Fn()> = {
         let tab_view = tab_view.clone();
         let tabs = Rc::clone(tabs);
         let tab_list = tab_list.clone();
-        move || {
-            // Clear existing rows.
+        Rc::new(move || {
             while let Some(child) = tab_list.first_child() {
                 tab_list.remove(&child);
             }
@@ -297,7 +298,6 @@ fn build_sidebar(
                     .build();
                 tab_list.append(&label);
             }
-            // Select the active tab.
             if let Some(sel_page) = tab_view.selected_page() {
                 let pos = tab_view.page_position(&sel_page);
                 if pos >= 0
@@ -306,11 +306,25 @@ fn build_sidebar(
                     tab_list.select_row(Some(&row));
                 }
             }
-            // Keep borrow checker happy — drop tabs borrow.
             let _ = &tabs;
-        }
+        })
     };
     rebuild_tab_list();
+
+    // Rebuild the sidebar tab list whenever pages are added,
+    // removed, or reordered in the tab view.
+    {
+        let r = Rc::clone(&rebuild_tab_list);
+        tab_view.connect_page_attached(move |_, _, _| r());
+    }
+    {
+        let r = Rc::clone(&rebuild_tab_list);
+        tab_view.connect_page_detached(move |_, _, _| r());
+    }
+    {
+        let r = Rc::clone(&rebuild_tab_list);
+        tab_view.connect_page_reordered(move |_, _, _| r());
+    }
 
     // When user clicks a row in the sidebar, switch the
     // tab_view to that page.
