@@ -89,6 +89,7 @@ impl SettingsView {
     pub fn new(config: &MugenkaiConfig) -> Rc<Self> {
         let page = adw::PreferencesPage::new();
         page.set_title("Settings");
+        page.add_css_class("mg-settings");
 
         // ─── keybindings group ────────────────────────────
         let kb_group = adw::PreferencesGroup::builder()

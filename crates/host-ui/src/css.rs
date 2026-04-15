@@ -402,18 +402,15 @@ toast {
 }
 
 /* ── adw preferences overrides ────────────────────────── */
-/* Redesigned for a Warp/Pane-style dark settings panel.  */
-/* Generous spacing, clear section hierarchy, controls    */
-/* well-separated from labels.                            */
+/* Scoped under .mg-settings so they only affect the      */
+/* Settings tab — not terminal panes, chat, or sidebar.   */
 
-preferencespage {
+.mg-settings {
     background-color: var(--mg-bg-primary);
     padding: 12px 24px;
 }
 
-/* ── section cards ────────────────────────────────────── */
-
-preferencesgroup {
+.mg-settings preferencesgroup {
     background-color: var(--mg-bg-secondary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-xl);
@@ -421,8 +418,7 @@ preferencesgroup {
     margin: 16px 0;
 }
 
-/* Section headings — bold, accent-colored left border */
-preferencesgroup > label {
+.mg-settings preferencesgroup > label {
     color: var(--mg-text-primary);
     font-weight: 700;
     font-size: 14px;
@@ -433,19 +429,7 @@ preferencesgroup > label {
     margin-bottom: 4px;
 }
 
-/* Section description text */
-preferencesgroup > label + label {
-    color: var(--mg-text-tertiary);
-    font-size: 11px;
-    font-weight: 400;
-    padding: 0 16px 8px 28px;
-    border-left: none;
-    margin-left: 0;
-}
-
-/* ── setting rows ─────────────────────────────────────── */
-
-row {
+.mg-settings row {
     background-color: var(--mg-bg-secondary);
     color: var(--mg-text-primary);
     border-bottom: 1px solid var(--mg-border-subtle);
@@ -454,34 +438,25 @@ row {
     padding: 6px 16px;
     margin: 0 4px;
 }
-row:first-child {
-    border-radius: var(--mg-radius-lg) var(--mg-radius-lg) 0 0;
-}
-row:last-child {
+.mg-settings row:last-child {
     border-bottom: none;
-    border-radius: 0 0 var(--mg-radius-lg) var(--mg-radius-lg);
 }
-row:only-child {
-    border-radius: var(--mg-radius-lg);
-}
-row:hover {
+.mg-settings row:hover {
     background-color: var(--mg-bg-hover);
 }
-
-row > box > label.title {
+.mg-settings row > box > label.title {
     color: var(--mg-text-primary);
     font-weight: 500;
     font-size: 13px;
 }
-row > box > label.subtitle {
+.mg-settings row > box > label.subtitle {
     color: var(--mg-text-tertiary);
     font-size: 11px;
     margin-top: 2px;
 }
 
-/* ── entry fields (keybindings, colors, font family) ── */
-
-row entry, row text {
+.mg-settings row entry,
+.mg-settings row text {
     background-color: var(--mg-bg-tertiary);
     color: var(--mg-text-primary);
     border: 1px solid var(--mg-border-primary);
@@ -492,83 +467,45 @@ row entry, row text {
     padding: 4px 10px;
     margin: 4px 0;
 }
-row entry:focus, row text:focus {
+.mg-settings row entry:focus,
+.mg-settings row text:focus {
     border-color: var(--mg-accent);
-    box-shadow: 0 0 0 1px var(--mg-accent);
 }
 
-/* ── spin buttons ─────────────────────────────────────── */
-
-spinbutton {
+.mg-settings spinbutton {
     background-color: var(--mg-bg-tertiary);
     color: var(--mg-text-primary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-md);
     min-height: 32px;
 }
-spinbutton > button {
+.mg-settings spinbutton > button {
     background-color: transparent;
     color: var(--mg-text-secondary);
     border: none;
-    min-width: 28px;
 }
-spinbutton > button:hover {
+.mg-settings spinbutton > button:hover {
     background-color: var(--mg-bg-hover);
-    color: var(--mg-text-primary);
 }
 
-/* ── switches ─────────────────────────────────────────── */
-
-switch {
+.mg-settings switch {
     background-color: var(--mg-bg-tertiary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-full);
-    min-width: 44px;
-    min-height: 24px;
 }
-switch:checked {
+.mg-settings switch:checked {
     background-color: var(--mg-accent);
     border-color: var(--mg-accent);
 }
-switch slider {
-    background-color: var(--mg-text-secondary);
-    border-radius: var(--mg-radius-full);
-    min-width: 18px;
-    min-height: 18px;
-}
-switch:checked slider {
-    background-color: var(--mg-text-on-accent);
-}
 
-/* ── combo/dropdown ───────────────────────────────────── */
-
-row dropdown {
+.mg-settings row dropdown {
     background-color: var(--mg-bg-tertiary);
     color: var(--mg-text-primary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-md);
-    min-height: 32px;
-    padding: 0 8px;
 }
 
-popover contents {
-    background-color: var(--mg-bg-secondary);
-    border: 1px solid var(--mg-border-primary);
-    border-radius: var(--mg-radius-lg);
-    padding: 4px;
-}
-popover modelbutton,
-popover row {
-    border-radius: var(--mg-radius-md);
-    padding: 6px 12px;
-    margin: 2px 4px;
-}
-popover modelbutton:hover,
-popover row:hover {
-    background-color: var(--mg-bg-hover);
-}
-
-/* ── scrollbars ───────────────────────────────────────── */
+/* ── global overrides (minimal, app-wide) ─────────────── */
 
 scrollbar slider {
     background-color: var(--mg-border-primary);
@@ -580,7 +517,14 @@ scrollbar slider:hover {
     background-color: var(--mg-text-quaternary);
 }
 
-/* ── action buttons ──────────────────────────────────── */
+popover contents {
+    background-color: var(--mg-bg-secondary);
+    border: 1px solid var(--mg-border-primary);
+    border-radius: var(--mg-radius-lg);
+}
+popover row:hover {
+    background-color: var(--mg-bg-hover);
+}
 
 button.suggested-action {
     background-color: var(--mg-accent);
