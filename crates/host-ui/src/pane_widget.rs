@@ -738,9 +738,29 @@ fn drain_pty_bytes(
         let _ = write_tx.send(bytes);
     }
 
+    // Auto-scroll to bottom:
+    //
+    // - We defer via `idle_add_local_once` because `set_markup`
+    //   invalidates pango layout and `adj.upper()` isn't reliable
+    //   until GTK re-runs the layout pass, which happens on the
+    //   next idle tick. Reading `adj.upper()` synchronously here
+    //   returns the stale value — so the naive `set_value(upper -
+    //   page)` call scrolls to the OLD bottom, not the new one.
+    //   This is why claude and other alt-screen TUIs appeared
+    //   scrolled-to-top when they first drew their UI: the label
+    //   grew taller than its last known size, and the scroll
+    //   adjustment was still the old (smaller) range.
+    //
+    // - Scroll on any refresh-triggering event (input, blink,
+    //   focus, resize) so alt-screen transitions also snap to
+    //   the bottom — that's where the cursor/input row sits in
+    //   every TUI we care about (claude, vim, htop, less).
     if had_input {
-        let adj = scroller.vadjustment();
-        adj.set_value(adj.upper() - adj.page_size());
+        let scroller_for_idle = scroller.clone();
+        glib::idle_add_local_once(move || {
+            let adj = scroller_for_idle.vadjustment();
+            adj.set_value(adj.upper() - adj.page_size());
+        });
     }
 
     glib::ControlFlow::Continue
