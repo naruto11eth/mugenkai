@@ -389,6 +389,20 @@ impl PaneWidget {
         self.write_tx.clone()
     }
 
+    /// Return the visible terminal grid rendered as plain text.
+    ///
+    /// Used by the "Explain this in chat" action so the chat pane
+    /// can ship whatever the user is currently looking at to
+    /// Claude without the SGR noise that the HTML formatter would
+    /// produce. Falls back to an empty string on formatter error.
+    #[must_use]
+    pub fn visible_screen_text(&self) -> String {
+        let state = self.state.borrow();
+        Formatter::new(&state.terminal, OutputFormat::Plain, true)
+            .and_then(|f| f.format())
+            .unwrap_or_default()
+    }
+
     /// True once the pane's shell process has exited (typed `exit`,
     /// Ctrl+D, killed externally, etc.). Set by the 30ms tick when
     /// the pty byte channel becomes disconnected.

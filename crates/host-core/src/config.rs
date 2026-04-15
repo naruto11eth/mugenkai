@@ -101,6 +101,7 @@ pub struct KeyBindings {
     pub copy: String,
     pub paste: String,
     pub open_chat: String,
+    pub explain_in_chat: String,
 }
 
 impl Default for KeyBindings {
@@ -120,6 +121,7 @@ impl Default for KeyBindings {
             copy: "ctrl+shift+c".into(),
             paste: "ctrl+shift+v".into(),
             open_chat: "ctrl+shift+a".into(),
+            explain_in_chat: "ctrl+shift+e".into(),
         }
     }
 }
@@ -255,6 +257,7 @@ impl MugenkaiConfig {
             ("mugenkai-keybinding-copy", &kb.copy),
             ("mugenkai-keybinding-paste", &kb.paste),
             ("mugenkai-keybinding-open-chat", &kb.open_chat),
+            ("mugenkai-keybinding-explain-in-chat", &kb.explain_in_chat),
         ] {
             let _ = writeln!(out, "{key:<48} = {value}");
         }
@@ -407,6 +410,9 @@ impl MugenkaiConfig {
             "mugenkai-keybinding-copy" => self.keybindings.copy = value.into(),
             "mugenkai-keybinding-paste" => self.keybindings.paste = value.into(),
             "mugenkai-keybinding-open-chat" => self.keybindings.open_chat = value.into(),
+            "mugenkai-keybinding-explain-in-chat" => {
+                self.keybindings.explain_in_chat = value.into();
+            }
 
             // ─── cursor ──────────────────────────────────────
             "mugenkai-cursor-style" => {

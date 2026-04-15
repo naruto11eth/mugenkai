@@ -179,6 +179,7 @@ impl MugenkaiWindow {
         install_copy_action(window, app, tab_view, tabs, &kb.copy);
         install_paste_action(window, app, tab_view, tabs, &kb.paste);
         install_open_chat_action(window, app, tab_view, tabs, &kb.open_chat);
+        install_explain_action(window, app, tab_view, tabs, &kb.explain_in_chat);
     }
 
     /// Show the window.
@@ -211,29 +212,63 @@ fn new_terminal_tab(
 /// Append a new Chat tab backed by a [`ChatView`] that talks to
 /// the sidecar daemon. Reuses an existing chat tab if one is
 /// already open (same pattern as Settings).
-fn new_chat_tab(tab_view: &adw::TabView, tabs: &Rc<RefCell<Vec<TabKind>>>) {
+fn new_chat_tab(tab_view: &adw::TabView, tabs: &Rc<RefCell<Vec<TabKind>>>) -> Rc<ChatView> {
     {
         let list = tabs.borrow();
         for (idx, kind) in list.iter().enumerate() {
-            if matches!(kind, TabKind::Chat(_))
+            if let TabKind::Chat(existing) = kind
                 && let Ok(i32_idx) = i32::try_from(idx)
             {
                 let page = tab_view.nth_page(i32_idx);
                 tab_view.set_selected_page(&page);
-                return;
+                return Rc::clone(existing);
             }
         }
     }
 
     let view = ChatView::new();
+
+    // Wire the "Run ↗" button on chat code blocks: sending text
+    // routes to whatever terminal tab is currently focused, or
+    // the first terminal tab if the chat tab itself is active.
+    // Returns false when no terminal tab exists at all — the
+    // chat pane then shows a toast prompting the user to open
+    // one rather than silently swallowing the click.
+    let tabs_for_send = Rc::clone(tabs);
+    let tab_view_for_send = tab_view.clone();
+    view.set_send_to_terminal(move |text: &str| {
+        let Some(container) = active_container(&tab_view_for_send, &tabs_for_send)
+            .or_else(|| first_terminal_container(&tabs_for_send))
+        else {
+            return false;
+        };
+        container.paste_to_focused(text);
+        true
+    });
+
     let page = tab_view.append(view.widget());
     page.set_title("Chat");
     page.set_icon(Some(&gtk4::gio::ThemedIcon::new(
         "user-available-symbolic",
     )));
 
-    tabs.borrow_mut().push(TabKind::Chat(view));
+    tabs.borrow_mut().push(TabKind::Chat(Rc::clone(&view)));
     tab_view.set_selected_page(&page);
+    view
+}
+
+/// Return the first terminal tab's container, or `None` if the
+/// window has no terminal tabs. Used by the chat pane's "Run ↗"
+/// handler as a fallback when the currently-active tab is the
+/// chat itself (can't send-to-self).
+fn first_terminal_container(tabs: &Rc<RefCell<Vec<TabKind>>>) -> Option<Rc<SplitContainer>> {
+    tabs.borrow().iter().find_map(|kind| {
+        if let TabKind::Terminal(c) = kind {
+            Some(Rc::clone(c))
+        } else {
+            None
+        }
+    })
 }
 
 /// Append a new Settings tab with the current config loaded
@@ -454,10 +489,42 @@ fn install_open_chat_action(
     let tab_view = tab_view.clone();
     let tabs = Rc::clone(tabs);
     action.connect_activate(move |_, _| {
-        new_chat_tab(&tab_view, &tabs);
+        let _ = new_chat_tab(&tab_view, &tabs);
     });
     window.add_action(&action);
     set_accel(app, "win.open-chat", accel_str);
+}
+
+/// Grab the focused pane's visible terminal text, open (or focus)
+/// the chat tab, and auto-send a prompt asking Claude to explain
+/// the output. Silently no-ops when the active tab isn't a
+/// terminal (nothing to explain).
+fn install_explain_action(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    tab_view: &adw::TabView,
+    tabs: &Rc<RefCell<Vec<TabKind>>>,
+    accel_str: &str,
+) {
+    let action = gio::SimpleAction::new("explain-in-chat", None);
+    let tab_view = tab_view.clone();
+    let tabs = Rc::clone(tabs);
+    action.connect_activate(move |_, _| {
+        // Must capture the terminal text BEFORE we open the chat
+        // tab — opening switches focus, and our `active_container`
+        // call would then return None.
+        let Some(container) = active_container(&tab_view, &tabs) else {
+            return;
+        };
+        let Some(terminal_text) = container.focused_visible_text() else {
+            return;
+        };
+
+        let chat_view = new_chat_tab(&tab_view, &tabs);
+        chat_view.explain_terminal(&terminal_text);
+    });
+    window.add_action(&action);
+    set_accel(app, "win.explain-in-chat", accel_str);
 }
 
 fn install_copy_action(
