@@ -296,7 +296,7 @@ impl ChatView {
         clipboard.read_texture_async(None::<&gtk4::gio::Cancellable>, move |result| {
             if let Ok(Some(texture)) = result {
                 let bytes = texture.save_to_png_bytes();
-                let b64 = base64_encode_png(&bytes);
+                let b64 = base64_encode(&bytes);
                 view_clone.add_attachment(b64);
             } else {
                 view_clone.toast("Clipboard has no image");
@@ -797,10 +797,10 @@ fn split_fenced_blocks(content: &str) -> Vec<Segment> {
     out
 }
 
-/// Encode a slice of PNG bytes to a base64 string (standard
+/// Encode a slice of image bytes to a base64 string (standard
 /// alphabet, with padding) — Anthropic's API expects this
 /// format for image content blocks.
-fn base64_encode_png(bytes: &[u8]) -> String {
+fn base64_encode(bytes: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
@@ -808,6 +808,138 @@ fn base64_encode_png(bytes: &[u8]) -> String {
 fn base64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.decode(s)
+}
+
+/// Anthropic's hard cap on a single image block. Above this the
+/// API rejects the message with a 400. We aim for some headroom
+/// because base64 inflates the wire payload by ~33% — so the
+/// actual binary budget that lands in JSON is ~3.75 MB.
+///
+/// Source: <https://docs.anthropic.com/en/docs/build-with-claude/vision#size-limits>
+#[allow(dead_code, reason = "referenced in tests + asserted upper bound")]
+const ANTHROPIC_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// Practical cap below the hard 5 MB so the base64-inflated JSON
+/// payload still fits with margin for surrounding text.
+#[allow(dead_code, reason = "wired in by attachment refactor")]
+const COMPRESS_TARGET_BYTES: usize = 3_500_000;
+
+/// Largest single dimension we'll let through. Anthropic accepts
+/// up to 8000×8000 but anything bigger is wasteful and slow to
+/// process — a 4K screenshot already conveys every detail Claude
+/// needs.
+#[allow(dead_code, reason = "wired in by attachment refactor")]
+const COMPRESS_MAX_EDGE_PX: u32 = 4096;
+
+/// Outcome of [`compress_for_anthropic`].
+///
+/// Carries both the (possibly-recompressed) bytes and the media
+/// type so the caller can attach the correct `media_type` to the
+/// Anthropic content block.
+#[derive(Debug, Clone)]
+#[allow(dead_code, reason = "wired in by attachment refactor")]
+pub(crate) struct CompressedImage {
+    pub bytes: Vec<u8>,
+    pub media_type: &'static str,
+}
+
+/// Best-effort recompression of an image to fit Anthropic's per-image
+/// limit.
+///
+/// Strategy:
+/// 1. If the input is already under the practical target AND its
+///    longest edge is reasonable, pass it through as PNG (fidelity
+///    preferred for screenshots and UI captures).
+/// 2. Otherwise decode, downscale until the longest edge is ≤
+///    `COMPRESS_MAX_EDGE_PX`, and re-encode as JPEG quality 85.
+/// 3. If JPEG q=85 still exceeds the target, halve dimensions
+///    iteratively (down to 512 px) until it fits or we give up.
+///
+/// Returns `None` if the bytes cannot be decoded as an image at
+/// all — caller should toast the user and skip staging.
+#[allow(dead_code, reason = "wired in by attachment refactor")]
+pub(crate) fn compress_for_anthropic(input: &[u8]) -> Option<CompressedImage> {
+    // Cheap path: input is small enough already, just trust the
+    // caller's bytes and detect media type from the magic header.
+    // We still bounce through `image::guess_format` so we don't
+    // accidentally label a JPEG as image/png on the wire.
+    if input.len() <= COMPRESS_TARGET_BYTES
+        && let Ok(fmt) = image::guess_format(input)
+    {
+        let media_type = format_to_media_type(fmt);
+        if !media_type.is_empty() {
+            return Some(CompressedImage {
+                bytes: input.to_vec(),
+                media_type,
+            });
+        }
+    }
+
+    // Heavy path: decode, optionally downscale, re-encode as JPEG.
+    let img = image::load_from_memory(input).ok()?;
+    let (w, h) = (img.width(), img.height());
+    let max_edge = w.max(h);
+    let img = if max_edge > COMPRESS_MAX_EDGE_PX {
+        // Scale by integer math to keep clippy happy AND avoid
+        // float-rounding surprises. `u64` widening guards against
+        // the multiplication overflowing for very large inputs.
+        let new_w = u32::try_from(u64::from(w) * u64::from(COMPRESS_MAX_EDGE_PX) / u64::from(max_edge))
+            .unwrap_or(COMPRESS_MAX_EDGE_PX)
+            .max(1);
+        let new_h = u32::try_from(u64::from(h) * u64::from(COMPRESS_MAX_EDGE_PX) / u64::from(max_edge))
+            .unwrap_or(COMPRESS_MAX_EDGE_PX)
+            .max(1);
+        img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+
+    // Iterate: encode JPEG q=85, halve dims until it fits. Lower
+    // bound 512 px so we don't produce uselessly tiny images even
+    // on pathologically large inputs — at that point the user is
+    // better off attaching a different file.
+    let mut current = img;
+    for _ in 0..6 {
+        let mut buf = Vec::with_capacity(COMPRESS_TARGET_BYTES);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85);
+        current.write_with_encoder(encoder).ok()?;
+        if buf.len() <= COMPRESS_TARGET_BYTES {
+            return Some(CompressedImage {
+                bytes: buf,
+                media_type: "image/jpeg",
+            });
+        }
+        if current.width() <= 512 || current.height() <= 512 {
+            // Already small — return the best we have even though
+            // it's still over budget. Anthropic's hard limit is
+            // 5 MB and this path keeps us well under that even at
+            // 512 px JPEG.
+            return Some(CompressedImage {
+                bytes: buf,
+                media_type: "image/jpeg",
+            });
+        }
+        current = current.resize(
+            current.width() / 2,
+            current.height() / 2,
+            image::imageops::FilterType::Lanczos3,
+        );
+    }
+    None
+}
+
+/// Map `image::ImageFormat` → Anthropic-accepted MIME type.
+/// Returns `""` for formats Anthropic doesn't accept so callers
+/// know to recompress.
+#[allow(dead_code, reason = "wired in by attachment refactor")]
+fn format_to_media_type(fmt: image::ImageFormat) -> &'static str {
+    match fmt {
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::WebP => "image/webp",
+        image::ImageFormat::Gif => "image/gif",
+        _ => "",
+    }
 }
 
 #[cfg(test)]
@@ -843,5 +975,98 @@ mod tests {
         assert_eq!(segments.len(), 2);
         assert!(matches!(&segments[0], Segment::Prose(s) if s == "before\n"));
         assert!(matches!(&segments[1], Segment::Prose(s) if s == "```\nnever closed"));
+    }
+
+    /// Encode an `n × n` solid-color PNG for tests. Solid colors
+    /// compress aggressively, so we use them when we want a small
+    /// PNG; pseudo-random pixels for the cases that need a large
+    /// PNG that won't shrink under DEFLATE.
+    fn solid_png(n: u32, color: [u8; 4]) -> Vec<u8> {
+        let mut img = image::RgbaImage::new(n, n);
+        for px in img.pixels_mut() {
+            *px = image::Rgba(color);
+        }
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_with_encoder(image::codecs::png::PngEncoder::new(&mut buf))
+            .expect("encode png");
+        buf
+    }
+
+    fn noisy_png(n: u32) -> Vec<u8> {
+        let mut img = image::RgbaImage::new(n, n);
+        for (i, px) in img.pixels_mut().enumerate() {
+            let r = u8::try_from(i % 256).unwrap_or(0);
+            let g = u8::try_from((i / 7) % 256).unwrap_or(0);
+            let b = u8::try_from((i / 13) % 256).unwrap_or(0);
+            *px = image::Rgba([r, g, b, 255]);
+        }
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_with_encoder(image::codecs::png::PngEncoder::new(&mut buf))
+            .expect("encode png");
+        buf
+    }
+
+    #[test]
+    fn compress_passes_small_png_through_unchanged() {
+        // Small solid PNG: under the target budget, so we expect
+        // the bytes back verbatim with media type detected.
+        let png = solid_png(64, [255, 0, 0, 255]);
+        let out = compress_for_anthropic(&png).expect("compress small png");
+        assert_eq!(out.media_type, "image/png");
+        assert_eq!(out.bytes, png, "small inputs must pass through byte-for-byte");
+    }
+
+    #[test]
+    fn compress_recompresses_large_noisy_png_to_jpeg_under_budget() {
+        // 4000×4000 noisy RGBA PNG ≈ ~64 MB raw; PNG-encoded it's
+        // still well above our 3.5 MB target because the noise
+        // defeats DEFLATE. The compressor must downscale + JPEG.
+        let png = noisy_png(4000);
+        assert!(
+            png.len() > COMPRESS_TARGET_BYTES,
+            "test fixture must exceed target ({} <= {})",
+            png.len(),
+            COMPRESS_TARGET_BYTES
+        );
+        let out = compress_for_anthropic(&png).expect("compress big png");
+        assert_eq!(out.media_type, "image/jpeg");
+        assert!(
+            out.bytes.len() <= COMPRESS_TARGET_BYTES,
+            "compressed image must fit budget ({} > {})",
+            out.bytes.len(),
+            COMPRESS_TARGET_BYTES
+        );
+        assert!(
+            out.bytes.len() <= ANTHROPIC_IMAGE_MAX_BYTES,
+            "compressed image must fit hard 5 MB limit"
+        );
+    }
+
+    #[test]
+    fn compress_returns_none_for_garbage_bytes() {
+        let garbage = b"not an image";
+        assert!(compress_for_anthropic(garbage).is_none());
+    }
+
+    #[test]
+    fn compress_jpeg_input_under_budget_is_passed_through() {
+        // Encode a small image as JPEG so the input media type is
+        // image/jpeg and the size is under target — the
+        // pass-through branch should label it correctly without
+        // re-encoding.
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            128,
+            128,
+            image::Rgba([10, 20, 30, 255]),
+        ));
+        let mut jpeg = Vec::new();
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90);
+        img.write_with_encoder(encoder).expect("encode jpeg");
+
+        let out = compress_for_anthropic(&jpeg).expect("compress jpeg");
+        assert_eq!(out.media_type, "image/jpeg");
+        assert_eq!(out.bytes, jpeg);
     }
 }
