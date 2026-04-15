@@ -431,8 +431,8 @@ row {
     color: var(--mg-text-primary);
     border-bottom: 1px solid var(--mg-border-subtle);
     border-radius: 0;
-    min-height: 42px;
-    padding: 0 12px;
+    min-height: 48px;
+    padding: 4px 14px;
     margin: 0;
 }
 row:last-child {
@@ -442,23 +442,30 @@ row:hover {
     background-color: var(--mg-bg-hover);
 }
 
+row > box {
+    spacing: 12px;
+}
+
 row > box > label.title {
     color: var(--mg-text-primary);
     font-weight: 500;
+    font-size: 13px;
+    min-width: 180px;
 }
 row > box > label.subtitle {
     color: var(--mg-text-tertiary);
     font-size: 11px;
 }
 
-/* Entry fields inside rows */
+/* Entry fields inside rows — give them breathing room */
 row entry, row text {
     background-color: var(--mg-bg-tertiary);
     color: var(--mg-text-primary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-sm);
     caret-color: var(--mg-accent);
-    min-height: 28px;
+    min-height: 30px;
+    padding: 4px 8px;
 }
 row entry:focus, row text:focus {
     border-color: var(--mg-accent);

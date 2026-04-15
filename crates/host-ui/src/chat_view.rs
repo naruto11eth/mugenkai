@@ -199,6 +199,27 @@ impl ChatView {
         self.root.upcast_ref()
     }
 
+    /// A short title derived from the first user message in the
+    /// conversation, or `None` if no user messages exist yet.
+    /// Used by the reaper timer to set the tab page title so the
+    /// sidebar shows something meaningful instead of "Chat".
+    #[must_use]
+    pub fn conversation_title(&self) -> Option<String> {
+        let history = self.history.borrow();
+        let first_user = history.iter().find(|m| m.role == Role::User)?;
+        let content = first_user.content.trim();
+        if content.is_empty() {
+            return None;
+        }
+        // Take the first line, truncated to 30 chars.
+        let first_line = content.lines().next().unwrap_or(content);
+        if first_line.len() <= 30 {
+            Some(first_line.to_string())
+        } else {
+            Some(format!("{}…", &first_line[..29]))
+        }
+    }
+
     /// Install the "send to focused terminal" callback. `window.rs`
     /// wires this when it creates the chat tab so the callback
     /// can reach the tabs vector.

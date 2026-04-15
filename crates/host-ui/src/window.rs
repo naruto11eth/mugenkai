@@ -873,11 +873,24 @@ fn install_exit_reaper(
         {
             let list = tabs.borrow();
             for (idx, kind) in list.iter().enumerate() {
+                // Sync chat tab titles from conversation content.
+                if let TabKind::Chat(chat_view) = kind
+                    && let Ok(i32_idx) = i32::try_from(idx)
+                    && let Some(title) = chat_view.conversation_title()
+                {
+                    let page = tab_view.nth_page(i32_idx);
+                    let display = format!("Chat: {title}");
+                    if page.title().as_str() != display {
+                        page.set_title(&display);
+                    }
+                }
+
                 if let TabKind::Terminal(container) = kind {
                     #[allow(clippy::cast_possible_truncation)]
-                    if let Some(title) = container.focused_title()
+                    if let Some(raw_title) = container.focused_title()
                         && let Ok(i32_idx) = i32::try_from(idx)
                     {
+                        let title = clean_tab_title(&raw_title);
                         let page = tab_view.nth_page(i32_idx);
                         if page.title().as_str() != title {
                             page.set_title(&title);
@@ -922,6 +935,27 @@ fn close_tab_at(tab_view: &adw::TabView, tabs: &Rc<RefCell<Vec<TabKind>>>, idx: 
     if idx < list.len() {
         list.remove(idx);
     }
+}
+
+/// Strip `user@hostname:` prefix from shell-set terminal titles.
+/// Shells typically set OSC 0/2 to `user@host: ~/path` or
+/// `user@host:~/path`. We only care about the path portion.
+fn clean_tab_title(raw: &str) -> String {
+    // Strip everything up to and including ": " or ":" that
+    // precedes a path-like segment (starts with / or ~).
+    if let Some(idx) = raw.find(": ") {
+        let rest = &raw[idx + 2..];
+        if rest.starts_with('/') || rest.starts_with('~') {
+            return rest.to_string();
+        }
+    }
+    if let Some(idx) = raw.find(':') {
+        let rest = &raw[idx + 1..];
+        if rest.starts_with('/') || rest.starts_with('~') {
+            return rest.to_string();
+        }
+    }
+    raw.to_string()
 }
 
 /// Translate a config-level accelerator string (`ctrl+shift+d`)
