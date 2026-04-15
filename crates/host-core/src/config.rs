@@ -47,12 +47,29 @@
 use std::path::{Path, PathBuf};
 
 /// The full user configuration.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MugenkaiConfig {
     pub keybindings: KeyBindings,
     pub cursor: CursorConfig,
     pub pane: PaneConfig,
     pub font: FontConfig,
+    /// Active theme preset name. Swaps the `--mg-*` CSS variables
+    /// at runtime when the user picks a different theme in Settings
+    /// or the onboarding wizard. One of the names returned by
+    /// `host_ui::css::available_themes()`.
+    pub theme: String,
+}
+
+impl Default for MugenkaiConfig {
+    fn default() -> Self {
+        Self {
+            keybindings: KeyBindings::default(),
+            cursor: CursorConfig::default(),
+            pane: PaneConfig::default(),
+            font: FontConfig::default(),
+            theme: "mugenkai-dark".into(),
+        }
+    }
 }
 
 /// Typography settings for the monospace terminal grid.
@@ -309,6 +326,10 @@ impl MugenkaiConfig {
         );
         out.push('\n');
 
+        out.push_str("# ─── theme ───────────────────────────────────────────────\n");
+        let _ = writeln!(out, "{:<48} = {}", "mugenkai-theme", self.theme);
+        out.push('\n');
+
         out.push_str("# ─── font ────────────────────────────────────────────────\n");
         let _ = writeln!(out, "{:<48} = {}", "mugenkai-font-family", self.font.family);
         let _ = writeln!(
@@ -389,6 +410,7 @@ impl MugenkaiConfig {
         cfg
     }
 
+    #[allow(clippy::too_many_lines)]
     fn apply(&mut self, key: &str, value: &str, line_no: usize) {
         match key {
             // ─── keybindings ─────────────────────────────────
@@ -475,6 +497,9 @@ impl MugenkaiConfig {
                     warn_invalid(line_no, key, value);
                 }
             }
+
+            // ─── theme ───────────────────────────────────────
+            "mugenkai-theme" => self.theme = value.into(),
 
             // ─── font ────────────────────────────────────────
             "mugenkai-font-family" => {
