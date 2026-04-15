@@ -80,6 +80,48 @@ pub fn available_themes() -> &'static [&'static str] {
     &["mugenkai-dark", "light", "solarized-dark", "dracula", "gruvbox"]
 }
 
+/// Hex color to use as the outer pango foreground wrapper on
+/// terminal panes. ANSI-colored runs (from shell `\e[` codes)
+/// override this; uncolored runs inherit it.
+///
+/// Kept colocated with the theme CSS so changes stay in sync.
+#[must_use]
+pub fn theme_terminal_fg(name: &str) -> &'static str {
+    match name {
+        "light" => "#0f172a",
+        "solarized-dark" => "#fdf6e3",
+        "dracula" => "#f8f8f2",
+        "gruvbox" => "#ebdbb2",
+        // mugenkai-dark (default): phosphor green for path/user
+        _ => "#4aff00",
+    }
+}
+
+/// Four-color swatch used by the theme picker to preview each
+/// theme. Order: accent, bg-primary, text-primary, bg-tertiary.
+#[must_use]
+pub fn theme_swatches(name: &str) -> [&'static str; 4] {
+    match name {
+        "light" => ["#0284c7", "#f8fafc", "#0f172a", "#f1f5f9"],
+        "solarized-dark" => ["#2aa198", "#002b36", "#fdf6e3", "#073642"],
+        "dracula" => ["#bd93f9", "#282a36", "#f8f8f2", "#343746"],
+        "gruvbox" => ["#d79921", "#1d2021", "#ebdbb2", "#32302f"],
+        _ => ["#4aff00", "#000000", "#e6e8ee", "#151515"],
+    }
+}
+
+/// Human-readable label for a theme preset.
+#[must_use]
+pub fn theme_display_name(name: &str) -> &'static str {
+    match name {
+        "light" => "Light",
+        "solarized-dark" => "Solarized Dark",
+        "dracula" => "Dracula",
+        "gruvbox" => "Gruvbox",
+        _ => "Mugenkai Dark",
+    }
+}
+
 // ─── theme engine ────────────────────────────────────────────
 
 fn apply_theme(display: &gdk::Display, theme_name: &str) {
@@ -414,29 +456,29 @@ toast {
     background-color: var(--mg-bg-secondary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-xl);
-    padding: 8px 4px;
-    margin: 16px 0;
+    padding: 8px 8px 12px 8px;
+    margin: 20px 0;
 }
 
+/* Section heading: accent bar + clear gap to first row below */
 .mg-settings preferencesgroup > label {
     color: var(--mg-text-primary);
     font-weight: 700;
     font-size: 14px;
     letter-spacing: 0.3px;
-    padding: 12px 16px 8px 16px;
+    padding: 14px 16px 0 16px;
     border-left: 3px solid var(--mg-accent);
-    margin-left: 8px;
-    margin-bottom: 4px;
+    margin: 4px 0 16px 8px;
 }
 
+/* Rows: more vertical padding so controls don't crowd labels. */
 .mg-settings row {
-    background-color: var(--mg-bg-secondary);
+    background-color: transparent;
     color: var(--mg-text-primary);
     border-bottom: 1px solid var(--mg-border-subtle);
-    border-radius: 0;
-    min-height: 56px;
-    padding: 6px 16px;
-    margin: 0 4px;
+    border-radius: var(--mg-radius-md);
+    padding: 10px 14px;
+    margin: 2px 4px;
 }
 .mg-settings row:last-child {
     border-bottom: none;
@@ -444,32 +486,56 @@ toast {
 .mg-settings row:hover {
     background-color: var(--mg-bg-hover);
 }
-.mg-settings row > box > label.title {
+/* Stacked field widgets (from entry_row helper) — big label
+   on top, dark input on its own line below. */
+.mg-field-label {
     color: var(--mg-text-primary);
-    font-weight: 500;
-    font-size: 13px;
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 0.1px;
 }
-.mg-settings row > box > label.subtitle {
-    color: var(--mg-text-tertiary);
-    font-size: 11px;
-    margin-top: 2px;
-}
-
-.mg-settings row entry,
-.mg-settings row text {
+.mg-field-input {
     background-color: var(--mg-bg-tertiary);
     color: var(--mg-text-primary);
     border: 1px solid var(--mg-border-primary);
     border-radius: var(--mg-radius-md);
     caret-color: var(--mg-accent);
-    min-height: 32px;
-    min-width: 160px;
-    padding: 4px 10px;
-    margin: 4px 0;
+    font-family: monospace;
+    padding: 6px 10px;
+    min-height: 34px;
 }
-.mg-settings row entry:focus,
-.mg-settings row text:focus {
+.mg-field-input:focus {
     border-color: var(--mg-accent);
+}
+
+/* Spin/Combo/Switch rows keep inline layout; restyle labels. */
+.mg-settings row .title {
+    color: var(--mg-text-primary);
+    font-weight: 600;
+    font-size: 14px;
+}
+.mg-settings row .subtitle {
+    color: var(--mg-text-tertiary);
+    font-size: 11px;
+}
+
+/* Theme picker list (Settings) */
+.mg-theme-list {
+    background-color: transparent;
+}
+.mg-theme-row {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--mg-radius-md);
+    margin: 4px 0;
+    padding: 0;
+}
+.mg-theme-row:hover {
+    background-color: var(--mg-bg-hover);
+}
+.mg-theme-row-selected {
+    border-color: var(--mg-accent);
+    background-color: var(--mg-bg-hover);
 }
 
 .mg-settings spinbutton {
@@ -619,22 +685,22 @@ listbox.boxed-list > row {
 
 const THEME_MUGENKAI_DARK: &str = "
 :root {
-    /* backgrounds — OLED-adjacent dark ramp */
-    --mg-bg-primary:    #0a0e14;
-    --mg-bg-secondary:  #12161e;
-    --mg-bg-tertiary:   #1a1f2b;
-    --mg-bg-hover:      #1f2533;
+    /* backgrounds — pure OLED black with subtle card elevation */
+    --mg-bg-primary:    #000000;
+    --mg-bg-secondary:  #0a0a0a;
+    --mg-bg-tertiary:   #151515;
+    --mg-bg-hover:      #1e1e1e;
 
-    /* text — 4-level hierarchy */
+    /* text — 4-level hierarchy (chrome stays readable white) */
     --mg-text-primary:    #e6e8ee;
     --mg-text-secondary:  #9ba1b0;
     --mg-text-tertiary:   #6b7280;
     --mg-text-quaternary: #4b5563;
-    --mg-text-on-accent:  #ffffff;
+    --mg-text-on-accent:  #000000;
 
-    /* accent — cyan/teal like Warp */
-    --mg-accent:        #00bcd4;
-    --mg-accent-hover:  #00acc1;
+    /* accent — phosphor green (user-requested for path/user) */
+    --mg-accent:        #4aff00;
+    --mg-accent-hover:  #66ff33;
 
     /* borders */
     --mg-border-primary: #1f2937;
