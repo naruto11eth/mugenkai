@@ -814,19 +814,36 @@ fn refresh_labels(state: &PaneState, status_label: &gtk4::Label, screen_label: &
             // Unfocused panes stay cursor-less so split layouts
             // don't show phantom cursors on every pane.
             let cursor = state.terminal.cursor_position();
-            // On the primary (normal) screen, force the cursor
-            // visible regardless of DEC mode 25. Full-screen TUI
-            // apps like vim, less, and `claude` hide the cursor
-            // with `ESC[?25l` when they start but don't always
-            // restore it with `ESC[?25h` on exit (signals, crashes,
-            // or just buggy cleanup). Trusting DEC 25 here means
-            // the user loses their cursor after an ungraceful
-            // TUI exit. On the alternate screen we still respect
-            // DEC 25 so vim/claude/etc. can legitimately hide it
-            // while they're running.
-            let on_alt = state.terminal.on_alt_screen();
-            let cursor_visible = cursor.visible || !on_alt;
-            if state.focused && cursor_visible && state.cursor_blink_on {
+            // Always draw a cursor on the focused pane — ignore
+            // DEC mode 25 entirely.
+            //
+            // Rationale: TUI apps that hide the cursor (vim, less,
+            // claude-code) almost always either (a) move the grid
+            // cursor to where they want it visually, or (b) draw
+            // their own glyph there. Respecting DEC 25 gave us
+            // correct behavior in theory but in practice broke
+            // two common cases:
+            //
+            // 1. Claude Code runs in an interactive input loop
+            //    that keeps DEC 25 off but expects the terminal
+            //    to render a cursor at the grid's cursor row/col.
+            //    Respecting DEC 25 left the user typing blind.
+            //
+            // 2. Apps that hide the cursor and then exit without
+            //    restoring it (sigkilled, crashed, or just buggy
+            //    cleanup — claude-code is a frequent offender)
+            //    left the user with no cursor at the bash prompt
+            //    until they typed `clear` or `reset` to force a
+            //    terminal reset. We now recover automatically.
+            //
+            // Tradeoff: apps that hide the cursor for legitimate
+            // UI reasons (e.g. mid-redraw flicker suppression)
+            // will see a cursor where they didn't want one for
+            // one frame. Acceptable — compared to losing the
+            // cursor for minutes, a single-frame flicker is
+            // invisible.
+            let _ = cursor.visible;
+            if state.focused && state.cursor_blink_on {
                 markup = splice_cursor(
                     &markup,
                     cursor.row as usize,
