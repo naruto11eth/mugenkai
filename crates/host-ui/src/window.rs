@@ -839,10 +839,20 @@ fn install_exit_reaper(
         {
             let list = tabs.borrow();
             for (idx, kind) in list.iter().enumerate() {
-                if let TabKind::Terminal(container) = kind
-                    && container.reap_exited() == ReapOutcome::AllPanesExited
-                {
-                    dead_tab_indices.push(idx);
+                if let TabKind::Terminal(container) = kind {
+                    #[allow(clippy::cast_possible_truncation)]
+                    if let Some(title) = container.focused_title()
+                        && let Ok(i32_idx) = i32::try_from(idx)
+                    {
+                        let page = tab_view.nth_page(i32_idx);
+                        if page.title().as_str() != title {
+                            page.set_title(&title);
+                        }
+                    }
+
+                    if container.reap_exited() == ReapOutcome::AllPanesExited {
+                        dead_tab_indices.push(idx);
+                    }
                 }
             }
         }

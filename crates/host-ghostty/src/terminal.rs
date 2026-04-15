@@ -190,6 +190,24 @@ impl Terminal {
         CursorPosition { col, row, visible }
     }
 
+    /// The terminal title as set by the shell via OSC 0 or OSC 2.
+    #[must_use]
+    pub fn title(&self) -> String {
+        let mut gs = sys::GhosttyString::default();
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.handle,
+                sys::GHOSTTY_TERMINAL_DATA_TITLE,
+                (&raw mut gs).cast::<std::ffi::c_void>(),
+            );
+        }
+        if gs.ptr.is_null() || gs.len == 0 {
+            return String::new();
+        }
+        let slice = unsafe { std::slice::from_raw_parts(gs.ptr, gs.len) };
+        String::from_utf8_lossy(slice).into_owned()
+    }
+
     /// Whether the application running inside the terminal has
     /// activated any mouse-tracking DEC mode (X10, normal, button,
     /// or any-event).

@@ -239,6 +239,15 @@ impl SplitContainer {
         }
     }
 
+    /// Return the focused pane's terminal title (from OSC 0/2).
+    #[must_use]
+    pub fn focused_title(&self) -> Option<String> {
+        let focused = self.tree.borrow().focused();
+        let panes = self.panes.borrow();
+        let title = panes.get(&focused)?.terminal_title();
+        if title.is_empty() { None } else { Some(title) }
+    }
+
     /// Return the focused pane's visible terminal text as a plain
     /// string. Used by the "Explain this in chat" action to ship
     /// the current terminal contents to Claude.

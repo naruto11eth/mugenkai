@@ -403,6 +403,12 @@ impl PaneWidget {
             .unwrap_or_default()
     }
 
+    /// The terminal's current title as set by the shell via OSC 0/2.
+    #[must_use]
+    pub fn terminal_title(&self) -> String {
+        self.state.borrow().terminal.title()
+    }
+
     /// True once the pane's shell process has exited (typed `exit`,
     /// Ctrl+D, killed externally, etc.). Set by the 30ms tick when
     /// the pty byte channel becomes disconnected.
