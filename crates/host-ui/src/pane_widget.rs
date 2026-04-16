@@ -204,7 +204,7 @@ impl PaneWidget {
     #[must_use]
     pub fn with_config(cfg: &MugenkaiConfig) -> Self {
         let terminal_fg = crate::css::theme_terminal_fg(&cfg.theme);
-        Self::with_all(&cfg.cursor, &cfg.font, terminal_fg)
+        Self::with_all(&cfg.cursor, &cfg.font, &terminal_fg)
     }
 
     /// Build a pane with cursor appearance driven by the user's

@@ -23,14 +23,36 @@
 //!    switching works.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use gtk4::CssProvider;
 use gtk4::gdk;
+use host_core::WarpTheme;
+
+use crate::warp_theme_css::{generate_warp_theme_css, warp_theme_swatches};
 
 thread_local! {
     static BASE_INSTALLED: RefCell<bool> = const { RefCell::new(false) };
     static THEME_PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
 }
+
+/// Slugs of the built-in themes. Used to (a) seed the picker
+/// before the Warp registry is populated, and (b) decide
+/// whether a theme name belongs to the hardcoded path or needs
+/// a registry lookup.
+const BUILTIN_THEME_SLUGS: &[&str] = &["mugenkai-dark", "light", "solarized-dark", "dracula", "gruvbox"];
+
+/// Registry of Warp YAML themes discovered at startup. Populated
+/// once via [`register_warp_themes`] before the first window is
+/// shown; afterwards every `theme_*` lookup function consults
+/// this map before falling back to the built-in match.
+///
+/// `OnceLock` rather than `RwLock` because we don't currently
+/// support live theme reload — adding it later would mean
+/// swapping this for `RwLock<HashMap<…>>`. Until then the
+/// thread-safe one-shot semantics are exactly what we want.
+static WARP_THEME_REGISTRY: OnceLock<HashMap<String, WarpTheme>> = OnceLock::new();
 
 // ─── public API ──────────────────────────────────────────────
 
@@ -74,10 +96,42 @@ pub fn switch_theme(theme_name: &str) {
     apply_theme(&display, theme_name);
 }
 
-/// Return the list of available theme names for UI pickers.
+/// Populate the Warp theme registry with parsed YAML themes.
+///
+/// Must be called once at startup, before the first call to
+/// any `theme_*` lookup function. Subsequent calls are silently
+/// ignored — `OnceLock` enforces single initialization. If the
+/// caller wants live reload it should refactor this to a
+/// `RwLock<HashMap<…>>`.
+///
+/// Themes that share a slug with a built-in are kept; built-ins
+/// still win at lookup time. This is intentional — we don't
+/// want a buggy `mugenkai-dark.yaml` in `~/.warp/themes/` to
+/// silently shadow the well-tested fallback path.
+#[allow(dead_code, reason = "wired in by startup-scan commit")]
+pub fn register_warp_themes(themes: Vec<WarpTheme>) {
+    let map: HashMap<String, WarpTheme> =
+        themes.into_iter().map(|t| (t.slug(), t)).collect();
+    let _ = WARP_THEME_REGISTRY.set(map);
+}
+
+/// Return the list of available theme slugs for UI pickers.
+/// Built-ins come first in their canonical order, then any
+/// Warp-discovered themes sorted by display name so the picker
+/// looks stable across launches.
 #[must_use]
-pub fn available_themes() -> &'static [&'static str] {
-    &["mugenkai-dark", "light", "solarized-dark", "dracula", "gruvbox"]
+pub fn available_themes() -> Vec<String> {
+    let mut out: Vec<String> = BUILTIN_THEME_SLUGS.iter().map(|s| (*s).to_string()).collect();
+    if let Some(registry) = WARP_THEME_REGISTRY.get() {
+        let mut warp: Vec<&WarpTheme> = registry
+            .iter()
+            .filter(|(slug, _)| !BUILTIN_THEME_SLUGS.contains(&slug.as_str()))
+            .map(|(_, theme)| theme)
+            .collect();
+        warp.sort_by(|a, b| a.display_name().cmp(b.display_name()));
+        out.extend(warp.into_iter().map(WarpTheme::slug));
+    }
+    out
 }
 
 /// Hex color to use as the outer pango foreground wrapper on
@@ -85,41 +139,90 @@ pub fn available_themes() -> &'static [&'static str] {
 /// override this; uncolored runs inherit it.
 ///
 /// Kept colocated with the theme CSS so changes stay in sync.
+/// For Warp-discovered themes we use the YAML's `foreground`
+/// directly so the prompt color matches the rest of the
+/// terminal text.
 #[must_use]
-pub fn theme_terminal_fg(name: &str) -> &'static str {
+pub fn theme_terminal_fg(name: &str) -> String {
     match name {
-        "light" => "#0f172a",
-        "solarized-dark" => "#fdf6e3",
-        "dracula" => "#f8f8f2",
-        "gruvbox" => "#ebdbb2",
+        "light" => "#0f172a".to_string(),
+        "solarized-dark" => "#fdf6e3".to_string(),
+        "dracula" => "#f8f8f2".to_string(),
+        "gruvbox" => "#ebdbb2".to_string(),
         // mugenkai-dark (default): phosphor green for path/user
-        _ => "#4aff00",
+        "mugenkai-dark" => "#4aff00".to_string(),
+        slug => warp_theme_for(slug)
+            .map_or_else(|| "#4aff00".to_string(), |t| t.foreground.clone()),
     }
 }
 
 /// Four-color swatch used by the theme picker to preview each
 /// theme. Order: accent, bg-primary, text-primary, bg-tertiary.
 #[must_use]
-pub fn theme_swatches(name: &str) -> [&'static str; 4] {
+pub fn theme_swatches(name: &str) -> [String; 4] {
     match name {
-        "light" => ["#0284c7", "#f8fafc", "#0f172a", "#f1f5f9"],
-        "solarized-dark" => ["#2aa198", "#002b36", "#fdf6e3", "#073642"],
-        "dracula" => ["#bd93f9", "#282a36", "#f8f8f2", "#343746"],
-        "gruvbox" => ["#d79921", "#1d2021", "#ebdbb2", "#32302f"],
-        _ => ["#4aff00", "#000000", "#e6e8ee", "#151515"],
+        "light" => [
+            "#0284c7".into(),
+            "#f8fafc".into(),
+            "#0f172a".into(),
+            "#f1f5f9".into(),
+        ],
+        "solarized-dark" => [
+            "#2aa198".into(),
+            "#002b36".into(),
+            "#fdf6e3".into(),
+            "#073642".into(),
+        ],
+        "dracula" => [
+            "#bd93f9".into(),
+            "#282a36".into(),
+            "#f8f8f2".into(),
+            "#343746".into(),
+        ],
+        "gruvbox" => [
+            "#d79921".into(),
+            "#1d2021".into(),
+            "#ebdbb2".into(),
+            "#32302f".into(),
+        ],
+        "mugenkai-dark" => [
+            "#4aff00".into(),
+            "#000000".into(),
+            "#e6e8ee".into(),
+            "#151515".into(),
+        ],
+        slug => warp_theme_for(slug).map_or_else(
+            || {
+                [
+                    "#4aff00".into(),
+                    "#000000".into(),
+                    "#e6e8ee".into(),
+                    "#151515".into(),
+                ]
+            },
+            warp_theme_swatches,
+        ),
     }
 }
 
-/// Human-readable label for a theme preset.
+/// Human-readable label for a theme preset. Falls back to
+/// title-cased slug if a Warp theme has no `name:` field and
+/// no filename stem (which the loader has already tried).
 #[must_use]
-pub fn theme_display_name(name: &str) -> &'static str {
+pub fn theme_display_name(name: &str) -> String {
     match name {
-        "light" => "Light",
-        "solarized-dark" => "Solarized Dark",
-        "dracula" => "Dracula",
-        "gruvbox" => "Gruvbox",
-        _ => "Mugenkai Dark",
+        "light" => "Light".to_string(),
+        "solarized-dark" => "Solarized Dark".to_string(),
+        "dracula" => "Dracula".to_string(),
+        "gruvbox" => "Gruvbox".to_string(),
+        "mugenkai-dark" => "Mugenkai Dark".to_string(),
+        slug => warp_theme_for(slug)
+            .map_or_else(|| slug.to_string(), |t| t.display_name().to_string()),
     }
+}
+
+fn warp_theme_for(slug: &str) -> Option<&'static WarpTheme> {
+    WARP_THEME_REGISTRY.get()?.get(slug)
 }
 
 // ─── theme engine ────────────────────────────────────────────
@@ -176,7 +279,9 @@ fn theme_css(name: &str) -> String {
         "solarized-dark" => THEME_SOLARIZED_DARK.to_string(),
         "dracula" => THEME_DRACULA.to_string(),
         "gruvbox" => THEME_GRUVBOX.to_string(),
-        _ => THEME_MUGENKAI_DARK.to_string(),
+        "mugenkai-dark" => THEME_MUGENKAI_DARK.to_string(),
+        slug => warp_theme_for(slug)
+            .map_or_else(|| THEME_MUGENKAI_DARK.to_string(), generate_warp_theme_css),
     }
 }
 

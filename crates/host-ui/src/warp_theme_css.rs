@@ -28,7 +28,6 @@ use host_core::{ThemeDetails, WarpTheme};
 /// provider can swap one for the other at runtime without any
 /// downstream code change.
 #[must_use]
-#[allow(dead_code, reason = "wired in by registry plumbing commit")]
 pub fn generate_warp_theme_css(theme: &WarpTheme) -> String {
     let bg = parse_hex(&theme.background).unwrap_or([0, 0, 0]);
     let fg = parse_hex(&theme.foreground).unwrap_or([230, 232, 238]);
@@ -126,7 +125,6 @@ pub fn generate_warp_theme_css(theme: &WarpTheme) -> String {
 /// by mugenkai's existing `theme_swatches`: accent, primary bg,
 /// foreground, tertiary bg.
 #[must_use]
-#[allow(dead_code, reason = "wired in by registry plumbing commit")]
 pub fn warp_theme_swatches(theme: &WarpTheme) -> [String; 4] {
     let bg = parse_hex(&theme.background).unwrap_or([0, 0, 0]);
     let bg_tertiary = match theme.details {
@@ -143,7 +141,7 @@ pub fn warp_theme_swatches(theme: &WarpTheme) -> [String; 4] {
 
 /// Color used by the focus ring around the active terminal pane.
 #[must_use]
-#[allow(dead_code, reason = "wired in by registry plumbing commit")]
+#[allow(dead_code, reason = "consumed by startup-scan commit")]
 pub fn warp_theme_focus_color(theme: &WarpTheme) -> String {
     theme.accent.clone()
 }

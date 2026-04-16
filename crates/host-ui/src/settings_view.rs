@@ -226,12 +226,12 @@ impl SettingsView {
 
         let rows_by_idx: Rc<RefCell<Vec<gtk4::ListBoxRow>>> = Rc::new(RefCell::new(Vec::new()));
 
-        for &name in crate::css::available_themes() {
-            let row = build_theme_row(name, name == config.theme);
+        for name in crate::css::available_themes() {
+            let row = build_theme_row(&name, name == config.theme);
             {
                 let theme_state = Rc::clone(&theme_state);
                 let rows_by_idx = Rc::clone(&rows_by_idx);
-                let name_owned = name.to_string();
+                let name_owned = name.clone();
                 let gesture = gtk4::GestureClick::new();
                 gesture.connect_released(move |_, _, _, _| {
                     (*theme_state.borrow_mut()).clone_from(&name_owned);
@@ -251,7 +251,7 @@ impl SettingsView {
                 });
                 row.add_controller(gesture);
             }
-            row.set_widget_name(name);
+            row.set_widget_name(&name);
             rows_by_idx.borrow_mut().push(row.clone());
             theme_list.append(&row);
         }

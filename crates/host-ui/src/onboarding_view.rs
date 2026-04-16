@@ -257,7 +257,7 @@ fn build_theme_page() -> gtk4::Box {
         .margin_top(16)
         .build();
 
-    for (idx, &name) in themes.iter().enumerate() {
+    for (idx, name) in themes.iter().enumerate() {
         let colors = swatches.get(idx).copied().unwrap_or(&["#888"]);
         let row = theme_row(name, colors, idx, &selected, &list);
         list.append(&row);
