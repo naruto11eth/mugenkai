@@ -18,6 +18,7 @@ mod pane_widget;
 mod pango_markup;
 mod settings_view;
 mod split_container;
+mod warp_theme_css;
 mod window;
 
 pub use app::{APP_ID, MugenkaiApplication};
