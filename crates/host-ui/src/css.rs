@@ -108,7 +108,6 @@ pub fn switch_theme(theme_name: &str) {
 /// still win at lookup time. This is intentional — we don't
 /// want a buggy `mugenkai-dark.yaml` in `~/.warp/themes/` to
 /// silently shadow the well-tested fallback path.
-#[allow(dead_code, reason = "wired in by startup-scan commit")]
 pub fn register_warp_themes(themes: Vec<WarpTheme>) {
     let map: HashMap<String, WarpTheme> =
         themes.into_iter().map(|t| (t.slug(), t)).collect();

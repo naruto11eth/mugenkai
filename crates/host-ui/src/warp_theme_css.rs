@@ -139,13 +139,6 @@ pub fn warp_theme_swatches(theme: &WarpTheme) -> [String; 4] {
     ]
 }
 
-/// Color used by the focus ring around the active terminal pane.
-#[must_use]
-#[allow(dead_code, reason = "consumed by startup-scan commit")]
-pub fn warp_theme_focus_color(theme: &WarpTheme) -> String {
-    theme.accent.clone()
-}
-
 // ─── color math ──────────────────────────────────────────────
 //
 // Tiny enough to inline. We deliberately avoid pulling in a

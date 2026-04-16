@@ -48,6 +48,21 @@ impl MugenkaiApplication {
     /// for tests or non-standard paths.
     #[must_use]
     pub fn with_config(config: MugenkaiConfig) -> Self {
+        // Discover Warp-format YAML themes from
+        // ~/.config/mugenkai/themes/ and ~/.warp/themes/ exactly
+        // once, before the first window builds its CSS provider.
+        // Bad files are logged via stderr; the picker keeps the
+        // built-in themes regardless.
+        let dirs = host_core::default_theme_dirs();
+        let themes = host_core::load_warp_themes_from_dirs(&dirs, |err| {
+            eprintln!("[mugenkai] warp theme load error: {err}");
+        });
+        let theme_count = themes.len();
+        crate::css::register_warp_themes(themes);
+        if theme_count > 0 {
+            eprintln!("[mugenkai] loaded {theme_count} Warp-format theme(s)");
+        }
+
         let inner = adw::Application::builder()
             .application_id(APP_ID)
             .flags(gio::ApplicationFlags::NON_UNIQUE)
