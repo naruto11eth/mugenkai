@@ -1,5 +1,6 @@
 pub mod config;
 pub mod pane_tree;
+pub mod warp_theme;
 pub mod workspace;
 
 pub use config::{
@@ -9,6 +10,10 @@ pub use config::{
 pub use pane_tree::{
     CloseResult, DEFAULT_SPLIT_RATIO, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, Node, Orientation, PaneId,
     PaneTree, PaneTreeError, SplitDirection,
+};
+pub use warp_theme::{
+    AnsiColors, TerminalColors, ThemeDetails, WarpTheme, WarpThemeError, default_theme_dirs,
+    load_warp_themes_from_dirs,
 };
 pub use workspace::{Tab, TabId, Workspace, WorkspaceError};
 
