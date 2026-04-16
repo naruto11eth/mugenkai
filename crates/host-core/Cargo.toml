@@ -12,3 +12,11 @@ workspace = true
 
 [dependencies]
 thiserror = "2"
+# YAML deserialization for Warp-compatible theme files. Using
+# serde_yaml_ng (the maintained fork) because the original
+# `serde_yaml` was archived in 2024.
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+# Cross-platform XDG / config directory resolution for finding
+# ~/.warp/themes and ~/.config/mugenkai/themes at startup.
+dirs = "6"
